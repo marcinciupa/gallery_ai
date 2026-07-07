@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "Gallery AI",
+    "slug": "gallery-ai",
+    "version": "0.915",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#000000",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.glue010.galleryai",
+      "versionCode": 9150,
+      "blockedPermissions": [
+        "android.permission.ACTIVITY_RECOGNITION"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#FF3A3A",
+        "foregroundImage": "./assets/android-icon-foreground.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-font",
+      "expo-asset",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#000000",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 180,
+          "resizeMode": "contain"
+        }
+      ],
+      "expo-image"
+    ]
+  }
+}
