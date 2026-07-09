@@ -73,8 +73,9 @@ function RotationDial({ angle, active, onDelta }: { angle: number; active: boole
       onPanResponderRelease: () => { last.current = 0; },
     }),
   ).current;
-  const TICKS = 41; // co ~2.25° na skali szerokości
-  const spacing = 8;
+  const TICKS = 121; // gęsta podziałka; skala obejmuje ±90° (przy ±45° brak luk na krawędziach)
+  const spacing = 6;
+  const degPerTick = 180 / (TICKS - 1);
   const fg = active ? color.dark21 : screen.olive.primary;
   const tick = active ? 'rgba(33,33,33,0.55)' : screen.olive.secondary;
   return (
@@ -83,7 +84,7 @@ function RotationDial({ angle, active, onDelta }: { angle: number; active: boole
         {`${angle.toFixed(2)}°`}
       </Text>
       <View style={{ height: 24, alignSelf: 'stretch', overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }} {...responder.panHandlers}>
-        <View style={{ flexDirection: 'row', transform: [{ translateX: -(angle / (90 / (TICKS - 1))) * spacing }] }}>
+        <View style={{ flexDirection: 'row', transform: [{ translateX: -(angle / degPerTick) * spacing }] }}>
           {Array.from({ length: TICKS }).map((_, i) => {
             const major = (i - (TICKS - 1) / 2) % 5 === 0;
             return <View key={i} style={{ width: 1, height: major ? 16 : 9, marginRight: spacing - 1, backgroundColor: tick }} />;
@@ -123,6 +124,22 @@ function AspectBar({ index, active, onPick }: { index: number; active: boolean; 
   );
 }
 
+/** Narożne znaczniki kadru „L" (Figma cropmarks) — 4 rogi × 2 ramiona, fosfor z poświatą. */
+function CornerMarks({ left, top, w, h }: { left: number; top: number; w: number; h: number }) {
+  const arm = Math.min(w, h) * 0.16; // długość ramienia
+  const t = 2; // grubość
+  const c = screen.olive.primary;
+  const seg = (s: object) => <View pointerEvents="none" style={{ position: 'absolute', backgroundColor: c, ...PILL, ...s }} />;
+  return (
+    <>
+      {seg({ left, top, width: arm, height: t })}{seg({ left, top, width: t, height: arm })}
+      {seg({ left: left + w - arm, top, width: arm, height: t })}{seg({ left: left + w - t, top, width: t, height: arm })}
+      {seg({ left, top: top + h - t, width: arm, height: t })}{seg({ left, top: top + h - arm, width: t, height: arm })}
+      {seg({ left: left + w - arm, top: top + h - t, width: arm, height: t })}{seg({ left: left + w - t, top: top + h - arm, width: t, height: arm })}
+    </>
+  );
+}
+
 export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>(function CropStage({ source }, ref) {
   // wymiary źródła (px) — z resolveAssetSource, doprecyzowane w onLoad
   const initDims = useMemo(() => {
@@ -149,10 +166,10 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
 
   const W = dims.W, H = dims.H;
   const ratio = ASPECTS[aspectIdx].key === 'ORIGINAL' ? W / H : ASPECTS[aspectIdx].ratio; // null → kwadrat
-  // okno kadru w polu A×A: dopasowane do proporcji, z marginesem
+  // okno kadru w polu A×A: dopasowane do proporcji, z marginesem (Figma: 254/354 ≈ 0.72)
   const win = useMemo(() => {
     if (area <= 0) return { w: 0, h: 0, left: 0, top: 0 };
-    const maxSide = area * 0.86;
+    const maxSide = area * 0.72;
     const r = ratio ?? 1;
     let w = maxSide, h = maxSide;
     if (r >= 1) { w = maxSide; h = w / r; if (h > maxSide) { h = maxSide; w = h * r; } }
@@ -160,23 +177,24 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
     return { w, h, left: (area - w) / 2, top: (area - h) / 2 };
   }, [area, ratio]);
 
-  // skala px→ekran, tak by bbox po rotacji POKRYWAŁ okno (cover) przy zoom=1
+  // skala px→ekran, tak by bbox po rotacji POKRYWAŁ CAŁE POLE (cover) przy zoom=1 — zdjęcie wypełnia
+  // kwadrat, poza oknem kadru jest tylko przyciemnione (Figma: pełne dimowane tło + jasne okno).
   const baseD = useMemo(() => {
     if (area <= 0) return 0;
     const { Wr, Hr } = rotatedBox(W, H, angle);
-    return Math.max(win.w / Wr, win.h / Hr);
-  }, [area, W, H, angle, win.w, win.h]);
+    return Math.max(area / Wr, area / Hr);
+  }, [area, W, H, angle]);
 
   // geometria czytana przez PanResponder (tworzony raz) — ref, żeby nie zamrozić wartości z 1. renderu (area=0)
-  const geomRef = useRef({ baseD: 0, winW: 0, winH: 0 });
+  const geomRef = useRef({ baseD: 0, area: 0 });
 
-  // clamp panu tak, by okno zostało pokryte przez bbox (bez pustych pól w kadrze)
+  // clamp panu tak, by CAŁE POLE zostało pokryte przez bbox (bez pustych pól w kadrze)
   const clampPan = (x: number, y: number, s: number) => {
     const g = geomRef.current;
     const d = g.baseD * s;
     const { Wr, Hr } = rotatedBox(W, H, angleRef.current);
-    const maxX = Math.max(0, (Wr * d - g.winW) / 2);
-    const maxY = Math.max(0, (Hr * d - g.winH) / 2);
+    const maxX = Math.max(0, (Wr * d - g.area) / 2);
+    const maxY = Math.max(0, (Hr * d - g.area) / 2);
     return { x: clamp(x, -maxX, maxX), y: clamp(y, -maxY, maxY) };
   };
 
@@ -258,7 +276,7 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
     },
   }), [uri, area, baseD, W, H, win.w, win.h, win.left, win.top]);
 
-  geomRef.current = { baseD, winW: win.w, winH: win.h }; // aktualizuj geometrię dla PanRespondera
+  geomRef.current = { baseD, area }; // aktualizuj geometrię dla PanRespondera
   const imgW = W * baseD, imgH = H * baseD; // rozmiar przy zoom=1; Animated.scale dokłada zoom
   const dim = { position: 'absolute' as const, backgroundColor: 'rgba(26,26,26,0.6)' };
   const stroke = 'rgba(226,255,228,0.25)';
@@ -299,12 +317,9 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
               <View pointerEvents="none" style={{ ...dim, left: 0, right: 0, top: win.top + win.h, bottom: 0 }} />
               <View pointerEvents="none" style={{ ...dim, top: win.top, height: win.h, left: 0, width: win.left }} />
               <View pointerEvents="none" style={{ ...dim, top: win.top, height: win.h, right: 0, width: win.left }} />
-              {/* ramka kadru + siatka rule-of-thirds */}
+              {/* cienka ramka kadru + narożne znaczniki „L" (bez siatki 1/3 — wg Figmy) */}
               <View pointerEvents="none" style={{ position: 'absolute', left: win.left, top: win.top, width: win.w, height: win.h, borderWidth: 1, borderColor: stroke }} />
-              <View pointerEvents="none" style={{ position: 'absolute', left: win.left + win.w / 3, top: win.top, width: 1, height: win.h, backgroundColor: stroke }} />
-              <View pointerEvents="none" style={{ position: 'absolute', left: win.left + (2 * win.w) / 3, top: win.top, width: 1, height: win.h, backgroundColor: stroke }} />
-              <View pointerEvents="none" style={{ position: 'absolute', top: win.top + win.h / 3, left: win.left, height: 1, width: win.w, backgroundColor: stroke }} />
-              <View pointerEvents="none" style={{ position: 'absolute', top: win.top + (2 * win.h) / 3, left: win.left, height: 1, width: win.w, backgroundColor: stroke }} />
+              <CornerMarks left={win.left} top={win.top} w={win.w} h={win.h} />
             </>
           ) : null}
         </View>
