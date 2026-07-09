@@ -285,6 +285,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     ],
     joystick: {
       highlighted: true,
+      repeat: true, // przytrzymanie = powtarzaj nawigację (krok co 1 element / wiersz)
       onUp: () => { if (menuOpen) menuMove(-1); else if (!viewerOpen) move(-cols); },
       onDown: () => { if (menuOpen) menuMove(1); else if (!viewerOpen) move(cols); },
       onLeft: () => { if (!menuOpen) move(-1); },   // w podglądzie: poprzednie zdjęcie
