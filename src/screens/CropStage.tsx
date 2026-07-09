@@ -1,16 +1,17 @@
 /**
- * CropStage — interaktywne kadrowanie + prostowanie (Figma CROP: node 402:5599).
- * Obraz w kwadratowym polu: pan + pinch-zoom framing, prostowanie pokrętłem (−45°…45°), pasek proporcji
- * (CUSTOM/ORIGINAL/1:1/3:2/4:3/16:9). Realny wynik przez `expo-image-manipulator` (rotate → crop).
+ * CropStage — interaktywne kadrowanie (uchwyty w rogach) + prostowanie (Figma CROP: node 406:6786).
+ * Zdjęcie „contain" (całe widoczne) w kwadratowym polu; nad nim OKNO KADRU z narożnymi uchwytami „L":
+ *   • przeciąganie narożnika = zmiana rozmiaru (przy proporcjach zablokowanych — z zachowaniem proporcji),
+ *   • przeciąganie środka = przesunięcie okna.
+ * Proporcje: CUSTOM = swobodnie, ORIGINAL = proporcje zdjęcia, 1:1 = kwadrat, 3:2/4:3/16:9 = wg nazwy.
+ * Prostowanie pokrętłem (−45°…45°). Wynik: `expo-image-manipulator` (rotate → crop).
  *
- * Matematyka kadru (zgodna z web-implementacją biblioteki: rotate rozszerza canvas do bounding-boxa Wr×Hr,
- * treść wyśrodkowana): okno kadru i canvas są OSIOWO-RÓWNOLEGŁE w przestrzeni ekranu, więc mapowanie
- * ekran→piksele to czyste skalowanie+przesunięcie:
- *   originX = (winLeft − (Cx − Wr·d/2)) / d ,  cropW = winW / d   (Wr,Hr = bbox po rotacji, d = skala px→ekran)
- * Sterowanie (rotate/ratio/reset/apply) wystawione przez ref — klawiatura edytora je woła.
+ * Matematyka: obraz rysowany „contain" (skala d0 = min(A/W, A/H)) i obracany o θ wokół środka. Biblioteczny
+ * rotate rozszerza canvas do bbox Wr×Hr (treść wyśrodkowana), więc canvas i osiowo-równoległe okno kadru
+ * mapują się czystym skalowaniem+przesunięciem: originX = (winX − (A/2 − Wr·d0/2)) / d0, cropW = winW / d0.
  */
-import { forwardRef, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { View, Text, Pressable, Animated, PanResponder, Image as RNImage, ImageSourcePropType, LayoutChangeEvent } from 'react-native';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { View, Text, Pressable, PanResponder, Image as RNImage, ImageSourcePropType, LayoutChangeEvent } from 'react-native';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { color, font, screen, textShadow } from '../theme/tokens';
 
@@ -20,10 +21,10 @@ const phosphorGlow = {
   textShadowOffset: { width: 0, height: 0 },
 } as const;
 
-// proporcje (kolejność wg Figmy). ratio = szer/wys; null = wolne (v1 = pełne kwadratowe pole).
+// proporcje (kolejność wg Figmy). ratio = szer/wys; null = ORIGINAL(wyliczone) lub CUSTOM(swobodne).
 export const ASPECTS = [
   { key: 'CUSTOM', ratio: null as number | null },
-  { key: 'ORIGINAL', ratio: null as number | null }, // wyliczone z wymiarów zdjęcia
+  { key: 'ORIGINAL', ratio: null as number | null },
   { key: '1:1', ratio: 1 },
   { key: '3:2', ratio: 3 / 2 },
   { key: '4:3', ratio: 4 / 3 },
@@ -32,7 +33,9 @@ export const ASPECTS = [
 const DEFAULT_ASPECT = 2; // '1:1'
 
 const MAX_ANGLE = 45;
+const HANDLE_HIT = 30;    // promień strefy chwytania narożnika (px)
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
+
 // bounding-box obrazu W×H po obrocie o `deg` (identyczne jak sizeFromAngle w bibliotece)
 function rotatedBox(W: number, H: number, deg: number) {
   const r = (deg * Math.PI) / 180;
@@ -41,14 +44,61 @@ function rotatedBox(W: number, H: number, deg: number) {
   return { Wr: H * s + W * c, Hr: H * c + W * s };
 }
 
-export type CropHandle = {
-  focusRotation: () => void;   // fokus na panel rotacji
-  focusRatio: () => void;      // fokus na panel proporcji
-  adjust: (dir: -1 | 1) => void; // reguluj AKTYWNY panel (rotacja ±1° / proporcje prev-next)
-  rotateBy: (delta: number) => void; // precyzyjna rotacja (metale — zawsze, niezależnie od fokusu)
-  reset: () => void;
-  apply: () => Promise<string | null>;
-};
+type Rect = { x: number; y: number; w: number; h: number };
+type Mode = 'tl' | 'tr' | 'bl' | 'br' | 'move';
+
+/** Domyślne okno kadru: wyśrodkowany prostokąt proporcji `r` (null = swobodny), ~90% pola obrazu. */
+function defaultWindow(r: number | null, rect: Rect): Rect {
+  const maxW = rect.w * 0.9, maxH = rect.h * 0.9;
+  let w = maxW, h = maxH;
+  if (r != null) {
+    if (r >= 1) { w = maxW; h = w / r; if (h > maxH) { h = maxH; w = h * r; } }
+    else { h = maxH; w = h * r; if (w > maxW) { w = maxW; h = w / r; } }
+  }
+  return { x: rect.x + (rect.w - w) / 2, y: rect.y + (rect.h - h) / 2, w, h };
+}
+
+/** Który uchwyt/tryb pod punktem (px,py): narożnik, środek (move) albo null. */
+function hitTest(px: number, py: number, win: Rect): Mode | null {
+  const corners: [Mode, number, number][] = [
+    ['tl', win.x, win.y], ['tr', win.x + win.w, win.y], ['bl', win.x, win.y + win.h], ['br', win.x + win.w, win.y + win.h],
+  ];
+  for (const [k, cx, cy] of corners) if (Math.hypot(px - cx, py - cy) <= HANDLE_HIT) return k;
+  if (px >= win.x && px <= win.x + win.w && py >= win.y && py <= win.y + win.h) return 'move';
+  return null;
+}
+
+/** Nowe okno po przeciągnięciu narożnika `corner` o (dx,dy); kotwica = przeciwny narożnik. */
+function resizeWindow(corner: Mode, s: Rect, dx: number, dy: number, r: number | null, bounds: Rect): Rect {
+  // kotwica (stała) i narożnik ruchomy (start)
+  const A: Record<string, [number, number]> = {
+    br: [s.x, s.y], tr: [s.x, s.y + s.h], bl: [s.x + s.w, s.y], tl: [s.x + s.w, s.y + s.h],
+  };
+  const M: Record<string, [number, number]> = {
+    br: [s.x + s.w, s.y + s.h], tr: [s.x + s.w, s.y], bl: [s.x, s.y + s.h], tl: [s.x, s.y],
+  };
+  const [ax, ay] = A[corner];
+  let mx = clamp(M[corner][0] + dx, bounds.x, bounds.x + bounds.w);
+  let my = clamp(M[corner][1] + dy, bounds.y, bounds.y + bounds.h);
+  const sgnx = mx >= ax ? 1 : -1, sgny = my >= ay ? 1 : -1;
+  let w = Math.abs(mx - ax), h = Math.abs(my - ay);
+  const MIN = bounds.w * 0.12;
+  // maks. rozmiar w kierunku ruchu (żeby zostać w granicach obrazu)
+  const maxW = sgnx > 0 ? bounds.x + bounds.w - ax : ax - bounds.x;
+  const maxH = sgny > 0 ? bounds.y + bounds.h - ay : ay - bounds.y;
+  if (r != null) {
+    // dopasuj do proporcji, mieszcząc się w dostępnym w×h
+    if (w / h > r) w = h * r; else h = w / r;
+    if (w > maxW) { w = maxW; h = w / r; }
+    if (h > maxH) { h = maxH; w = h * r; }
+    if (w < MIN) { w = MIN; h = w / r; }
+    if (h < MIN) { h = MIN; w = h * r; }
+  } else {
+    w = clamp(w, MIN, maxW); h = clamp(h, MIN, maxH);
+  }
+  mx = ax + sgnx * w; my = ay + sgny * h;
+  return { x: Math.min(ax, mx), y: Math.min(ay, my), w, h };
+}
 
 const PILL = { boxShadow: '0px 0px 4px 0px rgba(226,255,228,0.25)' } as any;
 const glowIf = (c: string) => (c === screen.olive.primary ? phosphorGlow : null); // glow tylko dla fosforowego tekstu
@@ -65,8 +115,7 @@ function RotationDial({ angle, active, onDelta }: { angle: number; active: boole
       onMoveShouldSetPanResponder: () => true,
       onPanResponderGrant: () => { last.current = 0; },
       onPanResponderMove: (_e, g) => {
-        // 4 px przesunięcia = 1°; przeciąganie w lewo zwiększa kąt (obrót zgodnie z ruchem treści)
-        const deg = -g.dx / 4;
+        const deg = -g.dx / 4; // 4 px = 1°; przeciąganie w lewo zwiększa kąt
         onDelta(deg - last.current);
         last.current = deg;
       },
@@ -90,7 +139,6 @@ function RotationDial({ angle, active, onDelta }: { angle: number; active: boole
             return <View key={i} style={{ width: 1, height: major ? 16 : 9, marginRight: spacing - 1, backgroundColor: tick }} />;
           })}
         </View>
-        {/* wskaźnik środka (0° względem bieżącego kąta) */}
         <View pointerEvents="none" style={{ position: 'absolute', width: 2, height: 20, backgroundColor: fg, ...(active ? null : PILL) }} />
       </View>
     </View>
@@ -103,9 +151,9 @@ function RotationDial({ angle, active, onDelta }: { angle: number; active: boole
  */
 function AspectBar({ index, active, onPick }: { index: number; active: boolean; onPick: (i: number) => void }) {
   const txt = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size } as const;
-  const itemColor = active ? color.dark21 : screen.olive.primary;      // niezaznaczone
-  const selBg = active ? color.dark21 : screen.olive.primary;          // pastylka zaznaczenia
-  const selColor = active ? screen.olive.primary : color.dark21;       // tekst zaznaczenia
+  const itemColor = active ? color.dark21 : screen.olive.primary;
+  const selBg = active ? color.dark21 : screen.olive.primary;
+  const selColor = active ? screen.olive.primary : color.dark21;
   return (
     <View style={[{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', alignSelf: 'stretch', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 2 }, active ? { backgroundColor: screen.olive.primary, ...PILL } : null]}>
       {ASPECTS.map((a, i) =>
@@ -124,10 +172,10 @@ function AspectBar({ index, active, onPick }: { index: number; active: boolean; 
   );
 }
 
-/** Narożne znaczniki kadru „L" (Figma cropmarks) — 4 rogi × 2 ramiona, fosfor z poświatą. */
+/** Narożne uchwyty kadru „L" (Figma cropmarks) — 4 rogi × 2 ramiona, fosfor z poświatą. */
 function CornerMarks({ left, top, w, h }: { left: number; top: number; w: number; h: number }) {
-  const arm = Math.min(w, h) * 0.16; // długość ramienia
-  const t = 2; // grubość
+  const arm = Math.min(w, h) * 0.16;
+  const t = 2;
   const c = screen.olive.primary;
   const seg = (s: object) => <View pointerEvents="none" style={{ position: 'absolute', backgroundColor: c, ...PILL, ...s }} />;
   return (
@@ -140,97 +188,84 @@ function CornerMarks({ left, top, w, h }: { left: number; top: number; w: number
   );
 }
 
+export type CropHandle = {
+  focusRotation: () => void;
+  focusRatio: () => void;
+  adjust: (dir: -1 | 1) => void; // AKTYWNY panel: rotacja ±1° / proporcje prev-next
+  rotateBy: (delta: number) => void; // precyzyjna rotacja (metale)
+  reset: () => void;
+  apply: () => Promise<string | null>;
+};
+
 export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>(function CropStage({ source }, ref) {
-  // wymiary źródła (px) — z resolveAssetSource, doprecyzowane w onLoad
   const initDims = useMemo(() => {
     try { const a = RNImage.resolveAssetSource(source as any); return { W: a?.width || 1, H: a?.height || 1 }; } catch { return { W: 1, H: 1 }; }
   }, [source]);
   const [dims, setDims] = useState(initDims);
   const uri = useMemo(() => { try { return RNImage.resolveAssetSource(source as any)?.uri ?? ''; } catch { return ''; } }, [source]);
 
-  const [area, setArea] = useState(0);         // bok kwadratowego pola kadru (px ekranu)
+  const [area, setArea] = useState(0);          // bok kwadratowego pola (px ekranu)
   const [aspectIdx, setAspectIdx] = useState(DEFAULT_ASPECT);
-  const [angle, setAngle] = useState(0);        // stopnie (−45..45)
-  const [focus, setFocus] = useState<'ratio' | 'rotation'>('ratio'); // aktywny panel (dwustopniowe menu)
-  const focusRef = useRef<'ratio' | 'rotation'>('ratio');
-  focusRef.current = focus;
-
-  // pinch/pan (Animated dla płynności; refy trzymają bieżące wartości do matematyki apply)
-  const scaleAnim = useRef(new Animated.Value(1)).current;
-  const txAnim = useRef(new Animated.Value(0)).current;
-  const tyAnim = useRef(new Animated.Value(0)).current;
-  const cur = useRef({ s: 1, x: 0, y: 0 });
-  const base = useRef({ s: 1, x: 0, y: 0 });
-  const pinch = useRef<{ d0: number; s0: number } | null>(null);
-  const angleRef = useRef(0);
+  const [angle, setAngle] = useState(0);
+  const angleRef = useRef(0); angleRef.current = angle;
+  const [focus, setFocus] = useState<'ratio' | 'rotation'>('ratio');
+  const [win, setWin] = useState<Rect>({ x: 0, y: 0, w: 0, h: 0 }); // okno kadru w układzie pola
 
   const W = dims.W, H = dims.H;
-  const ratio = ASPECTS[aspectIdx].key === 'ORIGINAL' ? W / H : ASPECTS[aspectIdx].ratio; // null → kwadrat
-  // okno kadru w polu A×A: dopasowane do proporcji, z marginesem (Figma: 254/354 ≈ 0.72)
-  const win = useMemo(() => {
-    if (area <= 0) return { w: 0, h: 0, left: 0, top: 0 };
-    const maxSide = area * 0.72;
-    const r = ratio ?? 1;
-    let w = maxSide, h = maxSide;
-    if (r >= 1) { w = maxSide; h = w / r; if (h > maxSide) { h = maxSide; w = h * r; } }
-    else { h = maxSide; w = h * r; if (w > maxSide) { w = maxSide; h = w / r; } }
-    return { w, h, left: (area - w) / 2, top: (area - h) / 2 };
-  }, [area, ratio]);
+  const ratio = ASPECTS[aspectIdx].key === 'ORIGINAL' ? W / H : ASPECTS[aspectIdx].ratio; // null = CUSTOM
+  const d0 = area > 0 ? Math.min(area / W, area / H) : 0; // skala „contain" (całe zdjęcie widoczne, θ=0)
+  const imageRect: Rect = useMemo(
+    () => ({ x: (area - W * d0) / 2, y: (area - H * d0) / 2, w: W * d0, h: H * d0 }),
+    [area, W, H, d0],
+  );
 
-  // skala px→ekran, tak by bbox po rotacji POKRYWAŁ CAŁE POLE (cover) przy zoom=1 — zdjęcie wypełnia
-  // kwadrat, poza oknem kadru jest tylko przyciemnione (Figma: pełne dimowane tło + jasne okno).
-  const baseD = useMemo(() => {
-    if (area <= 0) return 0;
-    const { Wr, Hr } = rotatedBox(W, H, angle);
-    return Math.max(area / Wr, area / Hr);
-  }, [area, W, H, angle]);
+  // refy dla PanRespondera (tworzony raz) — bieżąca geometria/okno/tryb
+  const winRef = useRef(win); winRef.current = win;
+  const rectRef = useRef(imageRect); rectRef.current = imageRect;
+  const ratioRef = useRef<number | null>(ratio); ratioRef.current = ratio;
+  const modeRef = useRef<Mode | null>(null);
+  const startWinRef = useRef<Rect>(win);
 
-  // geometria czytana przez PanResponder (tworzony raz) — ref, żeby nie zamrozić wartości z 1. renderu (area=0)
-  const geomRef = useRef({ baseD: 0, area: 0 });
-
-  // clamp panu tak, by CAŁE POLE zostało pokryte przez bbox (bez pustych pól w kadrze)
-  const clampPan = (x: number, y: number, s: number) => {
-    const g = geomRef.current;
-    const d = g.baseD * s;
-    const { Wr, Hr } = rotatedBox(W, H, angleRef.current);
-    const maxX = Math.max(0, (Wr * d - g.area) / 2);
-    const maxY = Math.max(0, (Hr * d - g.area) / 2);
-    return { x: clamp(x, -maxX, maxX), y: clamp(y, -maxY, maxY) };
-  };
+  // reset okna kadru przy zmianie proporcji / pola / wymiarów (NIE przy rotacji — kąt nie resetuje kadru)
+  useEffect(() => {
+    if (area <= 0) return;
+    setWin(defaultWindow(ratio, imageRect));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aspectIdx, area, W, H]);
 
   const responder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: () => { base.current = { ...cur.current }; pinch.current = null; },
-      onPanResponderMove: (e, g) => {
-        const ts = e.nativeEvent.touches;
-        if (ts.length >= 2) {
-          const d = Math.hypot(ts[0].pageX - ts[1].pageX, ts[0].pageY - ts[1].pageY);
-          if (!pinch.current) pinch.current = { d0: d, s0: base.current.s };
-          const s = clamp(pinch.current.s0 * (d / pinch.current.d0), 1, 8);
-          const p = clampPan(cur.current.x, cur.current.y, s);
-          cur.current.s = s; cur.current.x = p.x; cur.current.y = p.y;
-          scaleAnim.setValue(s); txAnim.setValue(p.x); tyAnim.setValue(p.y);
-        } else if (ts.length === 1) {
-          const p = clampPan(base.current.x + g.dx, base.current.y + g.dy, base.current.s);
-          cur.current.x = p.x; cur.current.y = p.y;
-          txAnim.setValue(p.x); tyAnim.setValue(p.y);
-        }
+      onPanResponderGrant: (e) => {
+        const { locationX, locationY } = e.nativeEvent;
+        modeRef.current = hitTest(locationX, locationY, winRef.current);
+        startWinRef.current = winRef.current;
       },
-      onPanResponderRelease: () => { pinch.current = null; base.current = { ...cur.current }; },
+      onPanResponderMove: (_e, g) => {
+        const m = modeRef.current;
+        if (!m) return;
+        const s = startWinRef.current, b = rectRef.current;
+        let next: Rect;
+        if (m === 'move') {
+          next = {
+            x: clamp(s.x + g.dx, b.x, b.x + b.w - s.w),
+            y: clamp(s.y + g.dy, b.y, b.y + b.h - s.h),
+            w: s.w, h: s.h,
+          };
+        } else {
+          next = resizeWindow(m, s, g.dx, g.dy, ratioRef.current, b);
+        }
+        winRef.current = next;
+        setWin(next);
+      },
+      onPanResponderRelease: () => { modeRef.current = null; },
+      onPanResponderTerminate: () => { modeRef.current = null; },
     }),
   ).current;
 
-  const setAngleClamped = (deg: number) => {
-    const a = clamp(deg, -MAX_ANGLE, MAX_ANGLE);
-    angleRef.current = a;
-    setAngle(a);
-    // po zmianie kąta bbox się zmienia → skoryguj pan, by okno zostało pokryte
-    const p = clampPan(cur.current.x, cur.current.y, cur.current.s);
-    cur.current.x = p.x; cur.current.y = p.y;
-    txAnim.setValue(p.x); tyAnim.setValue(p.y);
-  };
+  const setAngleClamped = (deg: number) => { const a = clamp(deg, -MAX_ANGLE, MAX_ANGLE); angleRef.current = a; setAngle(a); };
+  const focusRef = useRef<'ratio' | 'rotation'>('ratio'); focusRef.current = focus;
 
   useImperativeHandle(ref, () => ({
     focusRotation: () => setFocus('rotation'),
@@ -240,29 +275,17 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
       else setAspectIdx((i) => (i + dir + ASPECTS.length) % ASPECTS.length);
     },
     rotateBy: (delta: number) => { setFocus('rotation'); setAngleClamped(angleRef.current + delta); },
-    reset: () => {
-      setAspectIdx(DEFAULT_ASPECT);
-      setAngleClamped(0);
-      cur.current = { s: 1, x: 0, y: 0 }; base.current = { s: 1, x: 0, y: 0 };
-      scaleAnim.setValue(1); txAnim.setValue(0); tyAnim.setValue(0);
-    },
+    reset: () => { setAspectIdx(DEFAULT_ASPECT); setAngleClamped(0); setWin(defaultWindow(1, rectRef.current)); },
     apply: async () => {
-      if (!uri || area <= 0) return null;
-      const s = cur.current.s, d = baseD * s;
-      if (d <= 0) return null;
+      if (!uri || area <= 0 || d0 <= 0) return null;
       const { Wr, Hr } = rotatedBox(W, H, angleRef.current);
-      // środek obrazu na ekranie (w układzie pola A×A): środek pola + pan
-      const Cx = area / 2 + cur.current.x, Cy = area / 2 + cur.current.y;
-      // lewy-górny róg bbox po rotacji na ekranie
-      const canvasLeft = Cx - (Wr * d) / 2, canvasTop = Cy - (Hr * d) / 2;
-      const originX = (win.left - canvasLeft) / d;
-      const originY = (win.top - canvasTop) / d;
-      const cropW = win.w / d, cropH = win.h / d;
+      const canvasLeft = area / 2 - (Wr * d0) / 2, canvasTop = area / 2 - (Hr * d0) / 2;
+      const w = winRef.current;
       const rect = {
-        originX: clamp(originX, 0, Math.max(0, Wr - 1)),
-        originY: clamp(originY, 0, Math.max(0, Hr - 1)),
-        width: clamp(cropW, 1, Wr),
-        height: clamp(cropH, 1, Hr),
+        originX: clamp((w.x - canvasLeft) / d0, 0, Math.max(0, Wr - 1)),
+        originY: clamp((w.y - canvasTop) / d0, 0, Math.max(0, Hr - 1)),
+        width: clamp(w.w / d0, 1, Wr),
+        height: clamp(w.h / d0, 1, Hr),
       };
       const actions: ImageManipulator.Action[] = [];
       if (Math.abs(angleRef.current) > 0.001) actions.push({ rotate: angleRef.current });
@@ -270,35 +293,35 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
       try {
         const res = await ImageManipulator.manipulateAsync(uri, actions, { compress: 1, format: ImageManipulator.SaveFormat.PNG });
         return res.uri;
-      } catch (e) {
+      } catch {
         return null;
       }
     },
-  }), [uri, area, baseD, W, H, win.w, win.h, win.left, win.top]);
+  }), [uri, area, d0, W, H]);
 
-  geomRef.current = { baseD, area }; // aktualizuj geometrię dla PanRespondera
-  const imgW = W * baseD, imgH = H * baseD; // rozmiar przy zoom=1; Animated.scale dokłada zoom
+  const imgW = W * d0, imgH = H * d0;
   const dim = { position: 'absolute' as const, backgroundColor: 'rgba(26,26,26,0.6)' };
   const stroke = 'rgba(226,255,228,0.25)';
 
   return (
     <View style={{ flex: 1, alignSelf: 'stretch', gap: 16 }}>
-      {/* POLE KADRU — kwadrat = szerokość treści; holder flex:1 wypełnia górę, sterowanie płynie pod nim
-          w normalnym przepływie (bez position:absolute, wbrew Figmie) */}
+      {/* POLE KADRU — kwadrat = szerokość treści; holder flex:1 wypełnia górę, sterowanie płynie pod nim */}
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
         <View
           onLayout={(e: LayoutChangeEvent) => { const w = e.nativeEvent.layout.width; setArea((a) => (Math.abs(a - w) < 1 ? a : w)); }}
           style={{ width: '100%', aspectRatio: 1, backgroundColor: '#000', borderRadius: 2, overflow: 'hidden' }}
           {...responder.panHandlers}
         >
-          {area > 0 && baseD > 0 ? (
-            <Animated.View
+          {/* zdjęcie „contain", obracane o θ wokół środka */}
+          {area > 0 && d0 > 0 ? (
+            <View
+              pointerEvents="none"
               style={{
                 position: 'absolute',
                 left: area / 2, top: area / 2,
                 width: imgW, height: imgH,
                 marginLeft: -imgW / 2, marginTop: -imgH / 2,
-                transform: [{ translateX: txAnim }, { translateY: tyAnim }, { scale: scaleAnim }, { rotate: `${angle}deg` }],
+                transform: [{ rotate: `${angle}deg` }],
               }}
             >
               <RNImage
@@ -307,19 +330,18 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
                 onLoad={(ev: any) => { const s = ev?.nativeEvent?.source; if (s?.width && s?.height) setDims({ W: s.width, H: s.height }); }}
                 style={{ width: '100%', height: '100%' }}
               />
-            </Animated.View>
+            </View>
           ) : null}
 
-          {/* przyciemnienie poza oknem kadru (4 pasy) */}
-          {area > 0 ? (
+          {/* przyciemnienie poza oknem kadru (4 pasy) + ramka + narożne uchwyty „L" */}
+          {area > 0 && win.w > 0 ? (
             <>
-              <View pointerEvents="none" style={{ ...dim, left: 0, right: 0, top: 0, height: win.top }} />
-              <View pointerEvents="none" style={{ ...dim, left: 0, right: 0, top: win.top + win.h, bottom: 0 }} />
-              <View pointerEvents="none" style={{ ...dim, top: win.top, height: win.h, left: 0, width: win.left }} />
-              <View pointerEvents="none" style={{ ...dim, top: win.top, height: win.h, right: 0, width: win.left }} />
-              {/* cienka ramka kadru + narożne znaczniki „L" (bez siatki 1/3 — wg Figmy) */}
-              <View pointerEvents="none" style={{ position: 'absolute', left: win.left, top: win.top, width: win.w, height: win.h, borderWidth: 1, borderColor: stroke }} />
-              <CornerMarks left={win.left} top={win.top} w={win.w} h={win.h} />
+              <View pointerEvents="none" style={{ ...dim, left: 0, right: 0, top: 0, height: win.y }} />
+              <View pointerEvents="none" style={{ ...dim, left: 0, right: 0, top: win.y + win.h, bottom: 0 }} />
+              <View pointerEvents="none" style={{ ...dim, top: win.y, height: win.h, left: 0, width: win.x }} />
+              <View pointerEvents="none" style={{ ...dim, top: win.y, height: win.h, left: win.x + win.w, right: 0 }} />
+              <View pointerEvents="none" style={{ position: 'absolute', left: win.x, top: win.y, width: win.w, height: win.h, borderWidth: 1, borderColor: stroke }} />
+              <CornerMarks left={win.x} top={win.y} w={win.w} h={win.h} />
             </>
           ) : null}
         </View>
