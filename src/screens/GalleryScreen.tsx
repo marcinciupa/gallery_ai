@@ -18,7 +18,12 @@ import { useMedia } from '../hooks/useMedia';
 import { applyLibraryFilter } from '../hooks/useLibraryFilter';
 import { FeedGrid } from '../components/FeedGrid';
 import { useImageEditor } from './EditorScreen';
+import { MOCK_FOLDERS, type Folder } from './mockFolders';
 import { Diag, DIAG_ALL } from '../lib/diag';
+
+// MOCK_FOLDERS re-eksportowane dla App (natywnie puste, na web z `mockFolders.web.ts`)
+export { MOCK_FOLDERS };
+export type { Folder };
 
 const phosphorGlow = {
   textShadowColor: textShadow.phosphor.color,
@@ -26,38 +31,12 @@ const phosphorGlow = {
   textShadowOffset: { width: 0, height: 0 },
 } as const;
 
-// mockowe zdjęcia „Space" (wnętrze folderu) — realne z biblioteki mediów później
-const SPACE_PHOTOS: ImageSourcePropType[] = [
-  require('../../assets/mock/space/moon.jpg'),
-  require('../../assets/mock/space/milkyway.jpg'),
-  require('../../assets/mock/space/redstar.jpg'),
-  require('../../assets/mock/space/forest.png'),
-  require('../../assets/mock/space/nebula.jpg'),
-  require('../../assets/mock/space/galaxy.jpg'),
-  require('../../assets/mock/space/bluestar.jpg'),
-  require('../../assets/mock/space/purple.jpg'),
-  require('../../assets/mock/space/sun.jpg'),
-];
-
-type Folder = { id: string; name: string; cover?: ImageSourcePropType; count?: number; photos?: ImageSourcePropType[] };
-
 // web = placeholdery (projektowanie); natywnie/APK = realne media z expo-media-library (bez mocków)
 export const DESIGN = Platform.OS === 'web';
 
 // STABILNA pusta referencja — bez niej `media.folders ?? []` dawałoby nową tablicę co render,
 // a że `folders` jest zależnością efektu → nieskończona pętla re-renderów (dławiła wątek JS na urządzeniu).
 export const EMPTY_FOLDERS: Folder[] = [];
-
-// MOCK — TYLKO web (do projektowania UI bez urządzenia). „Space" spięty z breadcrumbem `.../Space/`.
-export const MOCK_FOLDERS: Folder[] = [
-  { id: 'space', name: 'Space', cover: require('../../assets/mock/lightroom.jpg'), count: SPACE_PHOTOS.length, photos: SPACE_PHOTOS },
-  { id: 'camera', name: 'Camera', cover: require('../../assets/mock/camera.jpg'), count: SPACE_PHOTOS.length, photos: SPACE_PHOTOS },
-  { id: 'camera_raw', name: 'Camera RAW', cover: require('../../assets/mock/camera_raw.png'), count: SPACE_PHOTOS.length, photos: SPACE_PHOTOS },
-  { id: 'nature', name: 'Nature', cover: require('../../assets/mock/nature.png'), count: SPACE_PHOTOS.length, photos: SPACE_PHOTOS },
-  { id: 'hikes', name: 'Hikes', cover: require('../../assets/mock/hikes.png'), count: SPACE_PHOTOS.length, photos: SPACE_PHOTOS },
-  { id: 'wild', name: 'Wild Animals', cover: require('../../assets/mock/wild_animals.png'), count: SPACE_PHOTOS.length, photos: SPACE_PHOTOS },
-  { id: 'vacations', name: 'Vacations', cover: require('../../assets/mock/vacations.png'), count: SPACE_PHOTOS.length, photos: SPACE_PHOTOS },
-];
 
 // Kafel = ZWYKŁY obraz (bez isolation/mixBlendMode/boxShadow per-kafel). Filtr trybu (monochrom/fosfor)
 // nakładany JEDEN raz nad całą siatką (patrz ScreenFilter) — kilkadziesiąt offscreenów per-kafel było
