@@ -9,7 +9,7 @@
  * Źródło zdjęć: MOCK (assets/mock) — realne z expo-media-library później.
  */
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, Pressable, Platform, FlatList, LayoutChangeEvent, ImageSourcePropType, Image as RNImage, Animated, PanResponder } from 'react-native';
+import { View, Text, Pressable, Platform, FlatList, LayoutChangeEvent, ImageSourcePropType } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { color, font, screen, textShadow } from '../theme/tokens';
 import type { KeyboardConfig } from '../components/chrome/Keyboard';
@@ -17,6 +17,7 @@ import { ScreenTopBar, Mode, DisplayMode } from './ScreenChrome';
 import { useMedia } from '../hooks/useMedia';
 import { applyLibraryFilter } from '../hooks/useLibraryFilter';
 import { FeedGrid } from '../components/FeedGrid';
+import { useImageEditor } from './EditorScreen';
 import { Diag, DIAG_ALL } from '../lib/diag';
 
 const phosphorGlow = {
@@ -128,83 +129,6 @@ const PhotoTile = memo(function PhotoTile({ source, size, selected, images, onPr
     </Pressable>
   );
 });
-
-/**
- * ImageViewer — prosty podgląd zdjęcia: CZYSTY obraz (bez fosforu/matrycy — renderowany NAD filtrem ekranu),
- * dopasowany do szerokości ekranu, na czarnym tle, wyśrodkowany. Pinch = zoom (1×–6×), 1 palcem = przesuwanie
- * gdy powiększone; puszczenie poniżej 1× wraca do dopasowania. Gesty na PanResponderze (brak gesture-handlera
- * w projekcie) — jak pinch obudowy. Remount przez `key` (nawigacja PREV/NEXT) zeruje zoom.
- */
-function ImageViewer({ source, width }: { source: ImageSourcePropType; width: number }) {
-  const initRatio = useMemo(() => {
-    try { const a = RNImage.resolveAssetSource(source as any); return a?.width && a?.height ? a.width / a.height : 1; } catch { return 1; }
-  }, [source]);
-  const [ratio, setRatio] = useState(initRatio); // szer/wys
-
-  const scale = useRef(new Animated.Value(1)).current;
-  const tx = useRef(new Animated.Value(0)).current;
-  const ty = useRef(new Animated.Value(0)).current;
-  const cur = useRef({ s: 1, x: 0, y: 0 });      // bieżące wartości (setValue nie da się odczytać zwrotnie)
-  const base = useRef({ s: 1, x: 0, y: 0 });      // stan na początku gestu
-  const pinch = useRef<{ d0: number; s0: number } | null>(null);
-
-  const dist2 = (ts: any[]) => Math.hypot(ts[0].pageX - ts[1].pageX, ts[0].pageY - ts[1].pageY);
-  const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
-
-  const responder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: () => { base.current = { ...cur.current }; pinch.current = null; },
-      onPanResponderMove: (e, g) => {
-        const ts = e.nativeEvent.touches;
-        if (ts.length >= 2) {
-          const d = dist2(ts);
-          if (!pinch.current) pinch.current = { d0: d, s0: base.current.s };
-          const s = clamp(pinch.current.s0 * (d / pinch.current.d0), 1, 6);
-          cur.current.s = s;
-          scale.setValue(s);
-        } else if (ts.length === 1 && base.current.s > 1) {
-          cur.current.x = base.current.x + g.dx;
-          cur.current.y = base.current.y + g.dy;
-          tx.setValue(cur.current.x);
-          ty.setValue(cur.current.y);
-        }
-      },
-      onPanResponderRelease: () => {
-        pinch.current = null;
-        if (cur.current.s <= 1.01) {
-          cur.current = { s: 1, x: 0, y: 0 };
-          base.current = { s: 1, x: 0, y: 0 };
-          Animated.parallel([
-            Animated.spring(scale, { toValue: 1, useNativeDriver: true }),
-            Animated.spring(tx, { toValue: 0, useNativeDriver: true }),
-            Animated.spring(ty, { toValue: 0, useNativeDriver: true }),
-          ]).start();
-        } else {
-          base.current = { ...cur.current };
-        }
-      },
-    }),
-  ).current;
-
-  return (
-    <View
-      style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}
-      {...responder.panHandlers}
-    >
-      <Animated.View style={{ transform: [{ translateX: tx }, { translateY: ty }, { scale }] }}>
-        <ExpoImage
-          source={source}
-          contentFit="contain"
-          cachePolicy="memory-disk"
-          onLoad={(ev: any) => { const s = ev?.source; if (s?.width && s?.height) setRatio(s.width / s.height); }}
-          style={{ width, height: width / ratio }}
-        />
-      </Animated.View>
-    </View>
-  );
-}
 
 // MENU (node 360:5309) — kontekstowe menu galerii. Popover fosforowy (#E2FFE4) z ciemnym tekstem; zaznaczona
 // pozycja = ciemna „pigułka" z zielonym tekstem i bulletem „•". Nawigacja joystick góra/dół + press (lub tap).
@@ -334,6 +258,17 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     setFeedSpans((s) => { const cur = Math.min(s[i] || 1, cols); return { ...s, [i]: (cur % cols) + 1 }; });
   const openViewerAt = (i: number) => { setSelected(i); setViewerOpen(true); };
 
+  // EDYTOR — pełnoekranowy podgląd + edycja (Figma „fullscreen_view/edit"). Aktywny, gdy `viewerOpen`;
+  // przejmuje treść ekranu i klawiaturę. Źródło = zaznaczone zdjęcie (feed lub wnętrze folderu).
+  const currentSource = (feedMode ? feedPhotos : photos)[selected];
+  const editor = useImageEditor({
+    source: currentSource,
+    open: viewerOpen,
+    onExit: closeViewer,
+    onPrev: () => move(-1),
+    onNext: () => move(1),
+  });
+
   // MENU
   const toggleMenu = () => setMenuOpen((o) => { if (!o) setMenuIndex(0); return !o; });
   const menuMove = (d: number) => setMenuIndex((i) => Math.max(0, Math.min(MENU_ITEMS.length - 1, i + d)));
@@ -343,10 +278,10 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     // pozostałe pozycje: funkcje dorobimy później (SORT/FILTER/HIDDEN/TRASH/CREATE FOLDER)
   };
 
-  // back: kolejno zamknij MENU → podgląd → wyjdź z folderu → wyjdź z feeda
+  // back: kolejno zamknij MENU → (edytor: menu edycji/pod-widok, a na końcu podgląd) → folder → feed
   const goBack = () => {
     if (menuOpen) { setMenuOpen(false); return true; }
-    if (viewerOpen) { setViewerOpen(false); return true; }
+    if (viewerOpen) { if (!editor.goBack()) setViewerOpen(false); return true; }
     if (inside) { setOpenFolder(null); return true; }
     if (feedMode) { setFeedMode(false); setSelected(0); return true; }
     return false;
@@ -489,14 +424,13 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
 
       {/* MENU (popover) — nad siatką, gdy nie ma podglądu */}
       {menuOpen && !viewerOpen ? <GalleryMenu index={menuIndex} onPick={pickMenu} /> : null}
-
-      {/* PODGLĄD ZDJĘCIA — pełnoekranowa nakładka NAD filtrem/matrycą (czysty obraz), pinch-zoom.
-          Źródło: feed lub wnętrze folderu. key=selected → remount przy PREV/NEXT zeruje zoom. */}
-      {viewerOpen && (feedMode ? feedPhotos[selected] : inside && photos[selected]) ? (
-        <ImageViewer key={selected} source={(feedMode ? feedPhotos : photos)[selected]} width={contentW || 0} />
-      ) : null}
     </>
   );
 
-  return { content, keyboard, goBack, pinchColumns, showModeToast, viewerOpen, menuOpen, allFolders };
+  // PODGLĄD/EDYCJA — gdy `viewerOpen`, edytor przejmuje CAŁĄ treść ekranu i klawiaturę (Figma
+  // „fullscreen_view/edit"). Inaczej: siatka + klawiatura galerii.
+  const finalContent = viewerOpen ? editor.content : content;
+  const finalKeyboard = viewerOpen ? editor.keyboard : keyboard;
+
+  return { content: finalContent, keyboard: finalKeyboard, goBack, pinchColumns, showModeToast, viewerOpen, menuOpen, allFolders, typing: viewerOpen ? editor.typing : false };
 }
