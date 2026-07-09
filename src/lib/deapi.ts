@@ -37,26 +37,39 @@ export async function editImage({ uri, prompt }: { uri: string; prompt: string }
     return { uri };
   }
 
-  // REALNY proxy: multipart (obraz + prompt) → backend forwarduje do deAPI (z-image) i zwraca wynik.
-  // Kontrakt (do ustalenia z backendem): 200 { uri?: string; image_base64?: string }.
+  // REALNY proxy: multipart (obraz + prompt) → backend forwarduje do deAPI i zwraca wynik.
+  // Model wybiera backend (np. z-image albo Qwen Edit Plus — oba dostępne w deAPI).
+  return postImage('/api/v1/image-edits', uri, { prompt });
+}
+
+/**
+ * Generative fill — wypełnia PRZEZROCZYSTE/puste obszary obrazu (np. czarne rogi po kadrze z obrotem).
+ * `uri` = obraz PNG, w którym obszary do domalowania są przezroczyste (kanał alfa = maska inpaintingu).
+ * STUB: zwraca wejściowy obraz. Realnie: proxy → deAPI (z-image inpaint/outpaint).
+ */
+export async function fillImage({ uri }: { uri: string }): Promise<ImageEditResult> {
+  if (AI_STUB) {
+    await sleep(1400);
+    return { uri };
+  }
+  return postImage('/api/v1/image-fills', uri);
+}
+
+/** Wspólne wysłanie obrazu (+pola) do proxy; kontrakt odpowiedzi: 200 { uri?; image_base64? }. */
+async function postImage(path: string, uri: string, fields: Record<string, string> = {}): Promise<ImageEditResult> {
   const form = new FormData();
-  form.append('prompt', prompt);
+  for (const [k, v] of Object.entries(fields)) form.append(k, v);
   form.append('image', { uri, name: 'image.png', type: 'image/png' } as any);
 
   const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 60000); // edycja bywa wolna — hojny limit
+  const timeout = setTimeout(() => ctrl.abort(), 60000); // generacja bywa wolna — hojny limit
   try {
-    const res = await fetch(`${BASE}/api/v1/image-edits`, {
-      method: 'POST',
-      headers: { ...appKeyHeader },
-      body: form,
-      signal: ctrl.signal,
-    });
-    if (!res.ok) throw new ApiError(res.status, `image-edit failed (${res.status})`);
+    const res = await fetch(`${BASE}${path}`, { method: 'POST', headers: { ...appKeyHeader }, body: form, signal: ctrl.signal });
+    if (!res.ok) throw new ApiError(res.status, `${path} failed (${res.status})`);
     const json: { uri?: string; image_base64?: string } = await res.json();
     if (json.uri) return { uri: json.uri };
     if (json.image_base64) return { uri: `data:image/png;base64,${json.image_base64}` };
-    throw new ApiError(0, 'image-edit: empty response');
+    throw new ApiError(0, `${path}: empty response`);
   } catch (e) {
     if (e instanceof ApiError) throw e;
     throw new ApiError(0, e instanceof Error ? e.message : 'network error');

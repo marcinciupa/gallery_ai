@@ -44,6 +44,15 @@ function rotatedBox(W: number, H: number, deg: number) {
   return { Wr: H * s + W * c, Hr: H * c + W * s };
 }
 
+// czy punkt (px,py) jest wewnątrz prostokąta obrazu (środek cx,cy, półboki hw,hh) obróconego o `deg`
+function insideRotRect(px: number, py: number, cx: number, cy: number, hw: number, hh: number, deg: number) {
+  const rad = (-deg * Math.PI) / 180;
+  const c = Math.cos(rad), s = Math.sin(rad);
+  const dx = px - cx, dy = py - cy;
+  const lx = dx * c - dy * s, ly = dx * s + dy * c; // punkt w lokalnym (nieobróconym) układzie obrazu
+  return Math.abs(lx) <= hw + 0.5 && Math.abs(ly) <= hh + 0.5;
+}
+
 type Rect = { x: number; y: number; w: number; h: number };
 type Mode = 'tl' | 'tr' | 'bl' | 'br' | 'move';
 
@@ -194,7 +203,8 @@ export type CropHandle = {
   adjust: (dir: -1 | 1) => void; // AKTYWNY panel: rotacja ±1° / proporcje prev-next
   rotateBy: (delta: number) => void; // precyzyjna rotacja (metale)
   reset: () => void;
-  apply: () => Promise<string | null>;
+  // wykonuje kadr/rotację; `needsFill` = kadr wychodzi poza obrócone zdjęcie (puste obszary do wypełnienia AI)
+  apply: () => Promise<{ uri: string; needsFill: boolean } | null>;
 };
 
 export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>(function CropStage({ source }, ref) {
@@ -287,12 +297,17 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
         width: clamp(w.w / d0, 1, Wr),
         height: clamp(w.h / d0, 1, Hr),
       };
+      // czy kadr wychodzi poza obrócone zdjęcie → puste rogi (kandydat do wypełnienia AI)
+      const cx = area / 2, cy = area / 2, hw = (W * d0) / 2, hh = (H * d0) / 2, a = angleRef.current;
+      const corners: [number, number][] = [[w.x, w.y], [w.x + w.w, w.y], [w.x, w.y + w.h], [w.x + w.w, w.y + w.h]];
+      const needsFill = corners.some(([px, py]) => !insideRotRect(px, py, cx, cy, hw, hh, a));
+
       const actions: ImageManipulator.Action[] = [];
       if (Math.abs(angleRef.current) > 0.001) actions.push({ rotate: angleRef.current });
       actions.push({ crop: rect });
       try {
         const res = await ImageManipulator.manipulateAsync(uri, actions, { compress: 1, format: ImageManipulator.SaveFormat.PNG });
-        return res.uri;
+        return { uri: res.uri, needsFill };
       } catch {
         return null;
       }

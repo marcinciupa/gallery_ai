@@ -16,7 +16,7 @@ import type { KeyboardConfig } from '../components/chrome/Keyboard';
 import { ScreenTopBar, AiStatusView } from './ScreenChrome';
 import { CropStage, CropHandle } from './CropStage';
 import { AiStage } from './AiStage';
-import { editImage } from '../lib/deapi';
+import { editImage, fillImage } from '../lib/deapi';
 import { saveImageToLibrary } from '../lib/saveImage';
 
 const phosphorGlow = {
@@ -171,15 +171,17 @@ export function useImageEditor({
   // SAVE — krótki komunikat po zapisie edytowanego obrazu
   const [saved, setSaved] = useState<null | 'ok' | 'denied' | 'error'>(null);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // FILL — po kadrze z obrotem zostały puste obszary → propozycja wypełnienia AI
+  const [fillOffer, setFillOffer] = useState(false);
 
   // zamknięcie podglądu → reset do stanu wyjściowego, żeby następne otwarcie zaczynało od VIEWER
   useEffect(() => {
-    if (!open) { setView('viewer'); setMenuOpen(false); setMenuIndex(0); setWorkingUri(null); setTyping(false); setDraft(''); setProcessing(false); setAiError(null); setSaved(null); }
+    if (!open) { setView('viewer'); setMenuOpen(false); setMenuIndex(0); setWorkingUri(null); setTyping(false); setDraft(''); setProcessing(false); setAiError(null); setSaved(null); setFillOffer(false); }
   }, [open]);
   // zmiana zdjęcia (PREV/NEXT) → porzuć wynik edycji poprzedniego
-  useEffect(() => { setWorkingUri(null); }, [source]);
-  // wyjście z widoku AI → zakończ pisanie
-  useEffect(() => { if (view !== 'ai') setTyping(false); }, [view]);
+  useEffect(() => { setWorkingUri(null); setFillOffer(false); }, [source]);
+  // wyjście z widoku AI → zakończ pisanie; wejście w pod-widok → schowaj ofertę wypełnienia
+  useEffect(() => { if (view !== 'ai') setTyping(false); if (view !== 'viewer') setFillOffer(false); }, [view]);
   // schowanie systemowej klawiatury (Android adjustNothing nie woła onBlur) → wyjście z trybu pisania
   useEffect(() => {
     if (!typing) return;
@@ -192,12 +194,29 @@ export function useImageEditor({
   const menuMove = (d: number) => setMenuIndex((i) => Math.max(0, Math.min(EDIT_MENU.length - 1, i + d)));
   const pick = (i: number) => { setMenuOpen(false); setView(i === 0 ? 'ai' : 'crop'); };
   const toViewer = () => setView('viewer');
-  // APPLY (crop) — policz i wykonaj kadr/rotację, podmień obraz roboczy, wróć do podglądu
+  // APPLY (crop) — policz i wykonaj kadr/rotację, podmień obraz roboczy, wróć do podglądu.
+  // Jeśli kadr zostawił puste obszary (obrót) → zaproponuj wypełnienie AI w podglądzie.
   const applyCrop = async () => {
-    const u = await cropRef.current?.apply();
-    if (u) setWorkingUri(u);
+    const res = await cropRef.current?.apply();
+    if (res?.uri) { setWorkingUri(res.uri); setFillOffer(res.needsFill); }
     setView('viewer');
   };
+
+  // FILL — wypełnij puste obszary (po obrocie) przez AI (deAPI: z-image / qwen-edit-plus)
+  const fillAI = async () => {
+    if (!workingUri || processing) return;
+    setProcessing(true); setAiError(null);
+    try {
+      const res = await fillImage({ uri: workingUri });
+      if (res?.uri) setWorkingUri(res.uri);
+      setFillOffer(false);
+    } catch (e) {
+      setAiError(e instanceof Error ? `ERROR: ${e.message}` : 'FILL FAILED');
+    } finally {
+      setProcessing(false);
+    }
+  };
+  const skipFill = () => setFillOffer(false);
 
   // AI EDIT — sterowanie klawiaturą/promptem
   const resolveUri = (src?: ImageSourcePropType) => { try { return RNImage.resolveAssetSource(src as any)?.uri ?? ''; } catch { return ''; } };
@@ -230,19 +249,23 @@ export function useImageEditor({
   };
   useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
 
-  // back: (processing = blokada) → pisanie → menu → pod-widok → (false = niech galeria zamknie podgląd)
+  // back: (processing = blokada) → oferta fill → pisanie → menu → pod-widok → (false = zamknij podgląd)
   const goBack = (): boolean => {
-    if (processing) return true;               // w trakcie edycji AI back nic nie robi (blokada)
+    if (processing) return true;               // w trakcie edycji/wypełniania AI back nic nie robi (blokada)
+    if (fillOffer) { setFillOffer(false); return true; }
     if (typing) { setTyping(false); return true; }
     if (menuOpen) { setMenuOpen(false); return true; }
     if (view !== 'viewer') { setView('viewer'); return true; }
     return false;
   };
 
-  // etykieta paska statusu + status AI (deAPI) — tylko w widoku AI; pulsuje w trakcie przetwarzania
+  // etykieta paska statusu + status AI (deAPI). Pulsuje w trakcie przetwarzania (edycja AI / wypełnianie).
   const label = view === 'viewer' ? 'VIEWER' : 'EDIT';
-  const ai: AiStatusView | undefined =
-    view === 'ai' ? { lines: processing ? ['AI IMAGE EDIT', 'PROCESSING…'] : ['AI IMAGE EDIT', 'WITH DEAPI'], pulse: processing } : undefined;
+  const ai: AiStatusView | undefined = processing
+    ? { lines: ['AI IMAGE EDIT', view === 'ai' ? 'PROCESSING…' : 'GENERATIVE FILL…'], pulse: true }
+    : view === 'ai'
+      ? { lines: ['AI IMAGE EDIT', 'WITH DEAPI'], pulse: false }
+      : undefined;
 
   // KLAWIATURA per pod-widok/stan. VIEWER: EDIT · PREV · joy · NEXT · MENU (EDIT/MENU otwierają menu,
   // joystick press = wyjście do siatki, L/R = prev/next). Menu otwarte: lewy = akcja zaznaczonej pozycji
@@ -309,25 +332,44 @@ export function useImageEditor({
       },
     };
   } else {
-    keyboard = {
-      screen: [
-        { label: 'EDIT', onPress: openMenu },
-        // prawy klawisz: SAVE gdy jest edycja do zapisania, inaczej MENU (otwiera menu EDIT)
-        workingUri
-          ? { label: 'SAVE', variant: 'primary', onPress: saveWorking }
-          : { label: 'MENU', onPress: openMenu },
-      ],
-      metal: [
-        { type: 'label', upper: 'PREV', active: true, onPress: onPrev },
-        { type: 'label', upper: 'NEXT', active: true, onPress: onNext },
-      ],
-      joystick: {
-        highlighted: true,
-        onLeft: onPrev,
-        onRight: onNext,
-        onPress: onExit,
-      },
-    };
+    const metalOff2: KeyboardConfig['metal'] = [
+      { type: 'label', upper: 'PREV', active: false },
+      { type: 'label', upper: 'NEXT', active: false },
+    ];
+    if (processing) {
+      // trwa wypełnianie AI (fill) — klawisze wygaszone
+      keyboard = { screen: [{ label: '' }, { label: '' }], metal: metalOff2, joystick: { highlighted: false } };
+    } else if (fillOffer) {
+      // po kadrze z obrotem: propozycja wypełnienia pustych obszarów AI
+      keyboard = {
+        screen: [
+          { label: 'SKIP', onPress: skipFill },
+          { label: 'FILL\nAI', variant: 'primary', onPress: fillAI },
+        ],
+        metal: metalOff2,
+        joystick: { highlighted: true, onPress: fillAI },
+      };
+    } else {
+      keyboard = {
+        screen: [
+          { label: 'EDIT', onPress: openMenu },
+          // prawy klawisz: SAVE gdy jest edycja do zapisania, inaczej MENU (otwiera menu EDIT)
+          workingUri
+            ? { label: 'SAVE', variant: 'primary', onPress: saveWorking }
+            : { label: 'MENU', onPress: openMenu },
+        ],
+        metal: [
+          { type: 'label', upper: 'PREV', active: true, onPress: onPrev },
+          { type: 'label', upper: 'NEXT', active: true, onPress: onNext },
+        ],
+        joystick: {
+          highlighted: true,
+          onLeft: onPrev,
+          onRight: onNext,
+          onPress: onExit,
+        },
+      };
+    }
   }
 
   const content = (
@@ -356,6 +398,26 @@ export function useImageEditor({
         )}
         {/* menu EDIT — popover nad obrazem (prawy-dolny róg), tylko w widoku VIEWER */}
         {menuOpen && view === 'viewer' ? <EditMenu index={menuIndex} onPick={pick} /> : null}
+
+        {/* propozycja wypełnienia AI (puste obszary po obrocie) — banner przy dolnej krawędzi */}
+        {view === 'viewer' && fillOffer && !processing ? (
+          <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, bottom: 8, alignItems: 'center', paddingHorizontal: 16 }}>
+            <View style={{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: 2, backgroundColor: screen.olive.primary, ...({ boxShadow: '0px 0px 4px 0px rgba(226,255,228,0.25)' } as any) }}>
+              <Text style={{ fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: color.dark21, textAlign: 'center' }}>
+                {'PUSTE OBSZARY PO OBROCIE — FILL AI?'}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
+        {/* nakładka przetwarzania (wypełnianie AI) */}
+        {view === 'viewer' && processing ? (
+          <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(26,26,26,0.55)' }}>
+            <Text style={{ fontFamily: font.monoLabel.family, fontSize: 14, letterSpacing: 2, color: screen.olive.primary, ...phosphorGlow }}>
+              GENERATIVE FILL…
+            </Text>
+          </View>
+        ) : null}
 
         {/* toast SAVE — fosforowa pigułka przy dolnej krawędzi */}
         {saved ? (
