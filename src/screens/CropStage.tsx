@@ -135,6 +135,8 @@ function RotationDial({ angle, active, onAngle, onActivate }: { angle: number; a
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 2,
+      // nie oddawaj gestu responderowi obudowy (swipe ekranu) — inaczej dial „ucieka" w trakcie ruchu
+      onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: () => { startAngle.current = angleRefExternal.current; lastDeg.current = Math.round(startAngle.current); onActivate?.(); },
       onPanResponderMove: (_e, g) => {
         // swipe w lewo (dx<0) → +kąt; skala idzie 1:1 z palcem (DIAL_SPACING px = 1°)
@@ -196,12 +198,12 @@ function AspectBar({ index, active, onPick }: { index: number; active: boolean; 
     <View style={[{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', alignSelf: 'stretch', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 2 }, active ? { backgroundColor: screen.olive.primary, ...PILL } : null]}>
       {ASPECTS.map((a, i) =>
         i === index ? (
-          <Pressable key={a.key} onPress={() => onPick(i)} style={{ flexDirection: 'row', alignItems: 'center', gap: 3, paddingVertical: 1, paddingHorizontal: 3, borderRadius: 2, backgroundColor: selBg }}>
+          <Pressable key={a.key} onPress={() => onPick(i)} hitSlop={{ top: 16, bottom: 16, left: 6, right: 6 }} style={{ flexDirection: 'row', alignItems: 'center', gap: 3, paddingVertical: 3, paddingHorizontal: 3, borderRadius: 2, backgroundColor: selBg }}>
             <Text style={{ ...txt, color: selColor, ...glowIf(selColor) }}>{'•'}</Text>
             <Text style={{ ...txt, color: selColor, ...glowIf(selColor) }}>{a.key}</Text>
           </Pressable>
         ) : (
-          <Pressable key={a.key} onPress={() => onPick(i)}>
+          <Pressable key={a.key} onPress={() => onPick(i)} hitSlop={{ top: 16, bottom: 16, left: 6, right: 6 }} style={{ paddingVertical: 3 }}>
             <Text style={{ ...txt, color: itemColor, ...glowIf(itemColor) }}>{a.key}</Text>
           </Pressable>
         ),
@@ -296,6 +298,8 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
+      // nie oddawaj gestu responderowi obudowy (swipe/pinch ekranu) — inaczej uchwyty „L" trudno złapać
+      onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: (e) => {
         const { locationX, locationY } = e.nativeEvent;
         modeRef.current = hitTest(locationX, locationY, winRef.current);

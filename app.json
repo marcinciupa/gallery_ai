@@ -2,7 +2,7 @@
   "expo": {
     "name": "Gallery AI",
     "slug": "gallery-ai",
-    "version": "0.923",
+    "version": "0.924",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -12,7 +12,7 @@
     },
     "android": {
       "package": "com.glue010.galleryai",
-      "versionCode": 9230,
+      "versionCode": 9240,
       "blockedPermissions": [
         "android.permission.ACTIVITY_RECOGNITION"
       ],
