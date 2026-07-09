@@ -40,7 +40,7 @@ export function AiStage({
   return (
     <View style={{ flex: 1, alignSelf: 'stretch', gap: 8 }}>
       {/* obraz (podgląd edytowanego zdjęcia) */}
-      <View style={{ flex: 1, alignSelf: 'stretch', backgroundColor: '#000', borderRadius: 2, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}>
+      <View style={{ flex: 1, alignSelf: 'stretch', borderRadius: 2, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}>
         <RNImage source={source} resizeMode="contain" style={{ width: '100%', height: '100%' }} />
         {/* nakładka przetwarzania */}
         {processing ? (

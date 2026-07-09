@@ -1,9 +1,9 @@
 /**
- * Zapis edytowanego obrazu. Natywnie: do biblioteki zdjęć (`expo-media-library`, wymaga uprawnienia
- * zapisu). Web: pobranie pliku (anchor download) — biblioteka mediów nie działa w przeglądarce.
+ * Zapis edytowanego obrazu. Natywnie: do biblioteki zdjęć przez NOWE API expo-media-library
+ * (`Asset.create`, spójnie z `useMedia` — stare `saveToLibraryAsync` w SDK 56 rzuca w runtime).
+ * Web: pobranie pliku (anchor download) — biblioteka mediów nie działa w przeglądarce.
  */
 import { Platform } from 'react-native';
-import * as MediaLibrary from 'expo-media-library';
 
 export type SaveResult = 'ok' | 'denied' | 'error';
 
@@ -23,9 +23,10 @@ export async function saveImageToLibrary(uri: string): Promise<SaveResult> {
     }
   }
   try {
-    const perm = await MediaLibrary.requestPermissionsAsync();
+    const ML: any = await import('expo-media-library');
+    const perm = await ML.requestPermissionsAsync();
     if (!perm.granted) return 'denied';
-    await MediaLibrary.saveToLibraryAsync(uri);
+    await ML.Asset.create(uri); // dodaje plik do biblioteki (nowe klasowe API)
     return 'ok';
   } catch {
     return 'error';

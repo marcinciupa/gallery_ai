@@ -96,7 +96,7 @@ function ZoomImage({ source }: { source: ImageSourcePropType }) {
 
   return (
     <View
-      style={{ flex: 1, alignSelf: 'stretch', backgroundColor: '#000', borderRadius: 2, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}
+      style={{ flex: 1, alignSelf: 'stretch', borderRadius: 2, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}
       onLayout={(e: LayoutChangeEvent) => {
         const { width, height } = e.nativeEvent.layout;
         setBox((b) => (Math.abs(b.w - width) < 1 && Math.abs(b.h - height) < 1 ? b : { w: width, h: height }));
@@ -405,7 +405,7 @@ export function useImageEditor({
           <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, bottom: 8, alignItems: 'center', paddingHorizontal: 16 }}>
             <View style={{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: 2, backgroundColor: screen.olive.primary, ...({ boxShadow: '0px 0px 4px 0px rgba(226,255,228,0.25)' } as any) }}>
               <Text style={{ fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: color.dark21, textAlign: 'center' }}>
-                {'PUSTE OBSZARY PO OBROCIE — FILL AI?'}
+                {'FILL EMPTY AREAS WITH GENERATIVE AI?'}
               </Text>
             </View>
           </View>

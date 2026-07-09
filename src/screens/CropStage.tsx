@@ -14,6 +14,7 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState }
 import { View, Text, Pressable, PanResponder, Image as RNImage, ImageSourcePropType, LayoutChangeEvent } from 'react-native';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { color, font, screen, textShadow } from '../theme/tokens';
+import { hapticTick, hapticDetent } from '../lib/haptics';
 
 const phosphorGlow = {
   textShadowColor: textShadow.phosphor.color,
@@ -33,7 +34,7 @@ export const ASPECTS = [
 const DEFAULT_ASPECT = 2; // '1:1'
 
 const MAX_ANGLE = 180;    // pełny zakres obrotu (−180°…180° = całe 360°)
-const HANDLE_HIT = 44;    // promień strefy chwytania narożnika (px) — wygodne łapanie „L"
+const HANDLE_HIT = 56;    // promień strefy chwytania narożnika (px) — wygodne łapanie „L"
 const MAX_ZOOM = 1.2;     // maksymalny zoom obrazu (120%) — gest dwoma palcami
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 
@@ -118,28 +119,47 @@ const glowIf = (c: string) => (c === screen.olive.primary ? phosphorGlow : null)
  * fosforowa pigułka z ciemnym tekstem/podziałką; inaczej: sam fosforowy tekst nad podziałką.
  */
 const DIAL_TICKS = 481;       // podziałka pokrywa cały zakres ±180° z zapasem (brak luk na krawędziach)
-const DIAL_SPACING = 5;
-const DIAL_DEG_PER_TICK = 1;  // 1° na kreskę
-function RotationDial({ angle, active, onDelta }: { angle: number; active: boolean; onDelta: (d: number) => void }) {
-  const last = useRef(0);
-  // przeciąganie GDZIEKOLWIEK po panelu (nie tylko po cienkiej listwie) zmienia kąt — łatwiejsze trafianie
+const DIAL_SPACING = 5;       // px między kreskami (1° = 1 kreska)
+const DETENT = 15;            // zaskok co 15°
+const STEP_PX = 6;            // swipe na 1° (poza detentem)
+const DETENT_PX = 20;         // dłuższy swipe, by opuścić próg 15° (opór/wskoczenie)
+/**
+ * RotationDial — pokrętło prostowania. SWIPE po CAŁYM pasku zmienia kąt skokowo co 1° (bardzo krótki tick),
+ * z zaskokiem co 15° (opór: trzeba swipnąć dłużej, dłuższy haptic). `onAngle` = kąt bezwzględny.
+ */
+function RotationDial({ angle, active, onAngle, onActivate }: { angle: number; active: boolean; onAngle: (a: number) => void; onActivate?: () => void }) {
+  const acc = useRef(0);       // nieskonsumowane px swipe
+  const lastDx = useRef(0);    // g.dx z poprzedniego move (do policzenia przyrostu)
+  const work = useRef(0);      // bieżący kąt (int) w trakcie gestu
+  const angleRefExternal = useRef(angle); angleRefExternal.current = angle; // aktualny kąt w domknięciu respondera
   const responder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 2,
-      onPanResponderGrant: () => { last.current = 0; },
+      onPanResponderGrant: () => { acc.current = 0; lastDx.current = 0; work.current = Math.round(angleRefExternal.current); onActivate?.(); },
       onPanResponderMove: (_e, g) => {
-        const deg = -g.dx / 3; // 3 px = 1° (czulej niż wcześniej)
-        onDelta(deg - last.current);
-        last.current = deg;
+        acc.current += g.dx - lastDx.current; lastDx.current = g.dx;
+        // konsumuj px na kroki 1°: swipe w lewo (dx<0) → +kąt; próg zależy od tego, czy stoimy na detencie
+        for (let guard = 0; guard < 400; guard++) {
+          const atDetent = work.current % DETENT === 0;
+          const threshold = atDetent ? DETENT_PX : STEP_PX;
+          if (Math.abs(acc.current) < threshold) break;
+          const dir = acc.current < 0 ? 1 : -1;
+          acc.current -= dir < 0 ? threshold : -threshold; // zmniejsz |acc| o próg
+          const next = clamp(work.current + dir, -MAX_ANGLE, MAX_ANGLE);
+          if (next === work.current) { acc.current = 0; break; }
+          work.current = next;
+          onAngle(next);
+          if (next % DETENT === 0) hapticDetent(); else hapticTick();
+        }
       },
-      onPanResponderRelease: () => { last.current = 0; },
-      onPanResponderTerminate: () => { last.current = 0; },
+      onPanResponderRelease: () => { acc.current = 0; lastDx.current = 0; },
+      onPanResponderTerminate: () => { acc.current = 0; lastDx.current = 0; },
     }),
   ).current;
-  // kreski tworzone RAZ (nie zależą od kąta) — przy obrocie re-render tylko przesuwa listwę
+
   const ticks = useMemo(
-    () => Array.from({ length: DIAL_TICKS }).map((_, i) => (i - (DIAL_TICKS - 1) / 2) % 5 === 0),
+    () => Array.from({ length: DIAL_TICKS }).map((_, i) => (i - (DIAL_TICKS - 1) / 2) % DETENT === 0),
     [],
   );
   const fg = active ? color.dark21 : screen.olive.primary;
@@ -153,7 +173,7 @@ function RotationDial({ angle, active, onDelta }: { angle: number; active: boole
         {`${angle.toFixed(2)}°`}
       </Text>
       <View style={{ height: 28, alignSelf: 'stretch', overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}>
-        <View style={{ flexDirection: 'row', transform: [{ translateX: -(angle / DIAL_DEG_PER_TICK) * DIAL_SPACING }] }}>
+        <View style={{ flexDirection: 'row', transform: [{ translateX: -angle * DIAL_SPACING }] }}>
           {ticks.map((major, i) => (
             <View key={i} style={{ width: 1, height: major ? 16 : 9, marginRight: DIAL_SPACING - 1, backgroundColor: tick }} />
           ))}
@@ -222,7 +242,23 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
     try { const a = RNImage.resolveAssetSource(source as any); return { W: a?.width || 1, H: a?.height || 1 }; } catch { return { W: 1, H: 1 }; }
   }, [source]);
   const [dims, setDims] = useState(initDims);
-  const uri = useMemo(() => { try { return RNImage.resolveAssetSource(source as any)?.uri ?? ''; } catch { return ''; } }, [source]);
+  const rawUri = useMemo(() => { try { return RNImage.resolveAssetSource(source as any)?.uri ?? ''; } catch { return ''; } }, [source]);
+
+  // NORMALIZACJA: raz na wejściu wypalamy orientację EXIF (przez manipulator) i dalej pracujemy na tym
+  // samym obrazie do wyświetlania I kadrowania — inaczej na telefonie zdjęcia z aparatu (EXIF) dają
+  // rozjechany kadr (RNImage prostuje, a piksele/wymiary bywają w surowej orientacji).
+  const [norm, setNorm] = useState<{ uri: string; W: number; H: number } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setNorm(null);
+    if (!rawUri) return;
+    ImageManipulator.manipulateAsync(rawUri, [], { format: ImageManipulator.SaveFormat.PNG })
+      .then((r) => { if (!cancelled) setNorm({ uri: r.uri, W: r.width, H: r.height }); })
+      .catch(() => {}); // fallback: oryginał + wymiary z onLoad
+    return () => { cancelled = true; };
+  }, [rawUri]);
+  const uri = norm?.uri ?? rawUri;
+  const imgSource: ImageSourcePropType = norm ? { uri: norm.uri } : source;
 
   const [area, setArea] = useState(0);          // bok kwadratowego pola (px ekranu)
   const [aspectIdx, setAspectIdx] = useState(DEFAULT_ASPECT);
@@ -233,7 +269,7 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
   const [zoom, setZoom] = useState(1); // zoom obrazu (1…MAX_ZOOM) — gest dwoma palcami
   const zoomRef = useRef(1); zoomRef.current = zoom;
 
-  const W = dims.W, H = dims.H;
+  const W = norm ? norm.W : dims.W, H = norm ? norm.H : dims.H; // wymiary znormalizowanego obrazu
   const ratio = ASPECTS[aspectIdx].key === 'ORIGINAL' ? W / H : ASPECTS[aspectIdx].ratio; // null = CUSTOM
   const d0 = area > 0 ? Math.min(area / W, area / H) : 0; // skala „contain" (całe zdjęcie widoczne, θ=0)
   const imageRect: Rect = useMemo(
@@ -357,7 +393,7 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
         <View
           onLayout={(e: LayoutChangeEvent) => { const w = e.nativeEvent.layout.width; setArea((a) => (Math.abs(a - w) < 1 ? a : w)); }}
-          style={{ width: '100%', aspectRatio: 1, backgroundColor: '#000', borderRadius: 2, overflow: 'hidden' }}
+          style={{ width: '100%', aspectRatio: 1, borderRadius: 2, overflow: 'hidden' }}
           {...responder.panHandlers}
         >
           {/* zdjęcie „contain", obracane o θ wokół środka */}
@@ -373,7 +409,7 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
               }}
             >
               <RNImage
-                source={source}
+                source={imgSource}
                 resizeMode="stretch"
                 onLoad={(ev: any) => { const s = ev?.nativeEvent?.source; if (s?.width && s?.height) setDims({ W: s.width, H: s.height }); }}
                 style={{ width: '100%', height: '100%' }}
@@ -400,7 +436,8 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
         <RotationDial
           angle={angle}
           active={focus === 'rotation'}
-          onDelta={(delta) => { if (focus !== 'rotation') setFocus('rotation'); setAngleClamped(angleRef.current + delta); }}
+          onActivate={() => setFocus('rotation')}
+          onAngle={(a) => setAngleClamped(a)}
         />
         <AspectBar index={aspectIdx} active={focus === 'ratio'} onPick={(i) => { setFocus('ratio'); setAspectIdx(i); }} />
       </View>
