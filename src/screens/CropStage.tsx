@@ -119,51 +119,48 @@ const glowIf = (c: string) => (c === screen.olive.primary ? phosphorGlow : null)
  * fosforowa pigułka z ciemnym tekstem/podziałką; inaczej: sam fosforowy tekst nad podziałką.
  */
 const DIAL_TICKS = 481;       // podziałka pokrywa cały zakres ±180° z zapasem (brak luk na krawędziach)
-const DIAL_SPACING = 5;       // px między kreskami (1° = 1 kreska)
+const DIAL_SPACING = 5;       // px na 1° — podziałka przesuwa się 1:1 z palcem
 const DETENT = 15;            // zaskok co 15°
-const STEP_PX = 6;            // swipe na 1° (poza detentem)
-const DETENT_PX = 20;         // dłuższy swipe, by opuścić próg 15° (opór/wskoczenie)
+const DETENT_ZONE = 2;        // strefa „przyciągania" wokół wielokrotności 15° (miękki zaskok, bez blokady)
 /**
- * RotationDial — pokrętło prostowania. SWIPE po CAŁYM pasku zmienia kąt skokowo co 1° (bardzo krótki tick),
- * z zaskokiem co 15° (opór: trzeba swipnąć dłużej, dłuższy haptic). `onAngle` = kąt bezwzględny.
+ * RotationDial — pokrętło prostowania. Przeciąganie po CAŁYM pasku przesuwa skalę 1:1 z palcem (ciągle),
+ * z MIĘKKIM zaskokiem co 15° (przyciąga w strefie ±2°, ale nie blokuje — dosuwasz palcem i puszcza).
+ * Haptic: krótki tick na każdy stopień, dłuższy na wielokrotnościach 15°. `onAngle` = kąt bezwzględny.
  */
 function RotationDial({ angle, active, onAngle, onActivate }: { angle: number; active: boolean; onAngle: (a: number) => void; onActivate?: () => void }) {
-  const acc = useRef(0);       // nieskonsumowane px swipe
-  const lastDx = useRef(0);    // g.dx z poprzedniego move (do policzenia przyrostu)
-  const work = useRef(0);      // bieżący kąt (int) w trakcie gestu
+  const startAngle = useRef(0); // kąt na początku gestu
+  const lastDeg = useRef(0);    // ostatni stopień (do haptyki)
   const angleRefExternal = useRef(angle); angleRefExternal.current = angle; // aktualny kąt w domknięciu respondera
   const responder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 2,
-      onPanResponderGrant: () => { acc.current = 0; lastDx.current = 0; work.current = Math.round(angleRefExternal.current); onActivate?.(); },
+      onPanResponderGrant: () => { startAngle.current = angleRefExternal.current; lastDeg.current = Math.round(startAngle.current); onActivate?.(); },
       onPanResponderMove: (_e, g) => {
-        acc.current += g.dx - lastDx.current; lastDx.current = g.dx;
-        // konsumuj px na kroki 1°: swipe w lewo (dx<0) → +kąt; próg zależy od tego, czy stoimy na detencie
-        for (let guard = 0; guard < 400; guard++) {
-          const atDetent = work.current % DETENT === 0;
-          const threshold = atDetent ? DETENT_PX : STEP_PX;
-          if (Math.abs(acc.current) < threshold) break;
-          const dir = acc.current < 0 ? 1 : -1;
-          acc.current -= dir < 0 ? threshold : -threshold; // zmniejsz |acc| o próg
-          const next = clamp(work.current + dir, -MAX_ANGLE, MAX_ANGLE);
-          if (next === work.current) { acc.current = 0; break; }
-          work.current = next;
-          onAngle(next);
-          if (next % DETENT === 0) hapticDetent(); else hapticTick();
-        }
+        // swipe w lewo (dx<0) → +kąt; skala idzie 1:1 z palcem (DIAL_SPACING px = 1°)
+        const raw = clamp(startAngle.current - g.dx / DIAL_SPACING, -MAX_ANGLE, MAX_ANGLE);
+        const m = Math.round(raw / DETENT) * DETENT;
+        const a = Math.abs(raw - m) < DETENT_ZONE ? m : raw; // miękki zaskok co 15°
+        const deg = Math.round(a);
+        if (deg !== lastDeg.current) { if (deg % DETENT === 0) hapticDetent(); else hapticTick(); lastDeg.current = deg; }
+        onAngle(a);
       },
-      onPanResponderRelease: () => { acc.current = 0; lastDx.current = 0; },
-      onPanResponderTerminate: () => { acc.current = 0; lastDx.current = 0; },
+      onPanResponderRelease: () => {},
+      onPanResponderTerminate: () => {},
     }),
   ).current;
 
+  // każda kreska = komórka szer. DIAL_SPACING z kreską WYŚRODKOWANĄ → środek trafia pod wskaźnik.
+  // kardynalne (0/±90/±180) = mocniejsze i wyższe.
   const ticks = useMemo(
-    () => Array.from({ length: DIAL_TICKS }).map((_, i) => (i - (DIAL_TICKS - 1) / 2) % DETENT === 0),
+    () => Array.from({ length: DIAL_TICKS }).map((_, i) => {
+      const deg = i - (DIAL_TICKS - 1) / 2;
+      return { major: deg % DETENT === 0, cardinal: deg % 90 === 0 };
+    }),
     [],
   );
   const fg = active ? color.dark21 : screen.olive.primary;
-  const tick = active ? 'rgba(33,33,33,0.55)' : screen.olive.secondary;
+  const tickColor = active ? 'rgba(33,33,33,0.55)' : screen.olive.secondary;
   return (
     <View
       {...responder.panHandlers}
@@ -173,9 +170,11 @@ function RotationDial({ angle, active, onAngle, onActivate }: { angle: number; a
         {`${angle.toFixed(2)}°`}
       </Text>
       <View style={{ height: 28, alignSelf: 'stretch', overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}>
-        <View style={{ flexDirection: 'row', transform: [{ translateX: -angle * DIAL_SPACING }] }}>
-          {ticks.map((major, i) => (
-            <View key={i} style={{ width: 1, height: major ? 16 : 9, marginRight: DIAL_SPACING - 1, backgroundColor: tick }} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', transform: [{ translateX: -angle * DIAL_SPACING }] }}>
+          {ticks.map((t, i) => (
+            <View key={i} style={{ width: DIAL_SPACING, alignItems: 'center' }}>
+              <View style={{ width: t.cardinal ? 2 : 1, height: t.cardinal ? 22 : t.major ? 16 : 9, backgroundColor: t.cardinal ? fg : tickColor }} />
+            </View>
           ))}
         </View>
         <View pointerEvents="none" style={{ position: 'absolute', width: 2, height: 22, backgroundColor: fg, ...(active ? null : PILL) }} />
