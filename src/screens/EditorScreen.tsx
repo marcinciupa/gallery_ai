@@ -286,6 +286,7 @@ export function useImageEditor({
       ],
       joystick: {
         highlighted: true,
+        repeat: true, // przytrzymanie L/P powtarza regulację aktywnego panelu (np. ciągły obrót)
         onUp: () => cropRef.current?.focusRotation(),
         onDown: () => cropRef.current?.focusRatio(),
         onLeft: () => cropRef.current?.adjust(-1),

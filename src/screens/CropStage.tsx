@@ -32,8 +32,9 @@ export const ASPECTS = [
 ] as const;
 const DEFAULT_ASPECT = 2; // '1:1'
 
-const MAX_ANGLE = 45;
-const HANDLE_HIT = 30;    // promień strefy chwytania narożnika (px)
+const MAX_ANGLE = 180;    // pełny zakres obrotu (−180°…180° = całe 360°)
+const HANDLE_HIT = 44;    // promień strefy chwytania narożnika (px) — wygodne łapanie „L"
+const MAX_ZOOM = 1.2;     // maksymalny zoom obrazu (120%) — gest dwoma palcami
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 
 // bounding-box obrazu W×H po obrocie o `deg` (identyczne jak sizeFromAngle w bibliotece)
@@ -116,39 +117,48 @@ const glowIf = (c: string) => (c === screen.olive.primary ? phosphorGlow : null)
  * Pokrętło prostowania — listwa z podziałką; przeciąganie w poziomie zmienia kąt. `active` (fokus na rotacji):
  * fosforowa pigułka z ciemnym tekstem/podziałką; inaczej: sam fosforowy tekst nad podziałką.
  */
+const DIAL_TICKS = 481;       // podziałka pokrywa cały zakres ±180° z zapasem (brak luk na krawędziach)
+const DIAL_SPACING = 5;
+const DIAL_DEG_PER_TICK = 1;  // 1° na kreskę
 function RotationDial({ angle, active, onDelta }: { angle: number; active: boolean; onDelta: (d: number) => void }) {
   const last = useRef(0);
+  // przeciąganie GDZIEKOLWIEK po panelu (nie tylko po cienkiej listwie) zmienia kąt — łatwiejsze trafianie
   const responder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 2,
       onPanResponderGrant: () => { last.current = 0; },
       onPanResponderMove: (_e, g) => {
-        const deg = -g.dx / 4; // 4 px = 1°; przeciąganie w lewo zwiększa kąt
+        const deg = -g.dx / 3; // 3 px = 1° (czulej niż wcześniej)
         onDelta(deg - last.current);
         last.current = deg;
       },
       onPanResponderRelease: () => { last.current = 0; },
+      onPanResponderTerminate: () => { last.current = 0; },
     }),
   ).current;
-  const TICKS = 121; // gęsta podziałka; skala obejmuje ±90° (przy ±45° brak luk na krawędziach)
-  const spacing = 6;
-  const degPerTick = 180 / (TICKS - 1);
+  // kreski tworzone RAZ (nie zależą od kąta) — przy obrocie re-render tylko przesuwa listwę
+  const ticks = useMemo(
+    () => Array.from({ length: DIAL_TICKS }).map((_, i) => (i - (DIAL_TICKS - 1) / 2) % 5 === 0),
+    [],
+  );
   const fg = active ? color.dark21 : screen.olive.primary;
   const tick = active ? 'rgba(33,33,33,0.55)' : screen.olive.secondary;
   return (
-    <View style={[{ alignItems: 'center', gap: 4, alignSelf: 'stretch', borderRadius: 2 }, active ? { backgroundColor: screen.olive.primary, paddingVertical: 8, ...PILL } : null]}>
+    <View
+      {...responder.panHandlers}
+      style={[{ alignItems: 'center', gap: 4, alignSelf: 'stretch', borderRadius: 2, paddingVertical: 8 }, active ? { backgroundColor: screen.olive.primary, ...PILL } : null]}
+    >
       <Text style={{ fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: fg, ...glowIf(fg) }}>
         {`${angle.toFixed(2)}°`}
       </Text>
-      <View style={{ height: 24, alignSelf: 'stretch', overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }} {...responder.panHandlers}>
-        <View style={{ flexDirection: 'row', transform: [{ translateX: -(angle / degPerTick) * spacing }] }}>
-          {Array.from({ length: TICKS }).map((_, i) => {
-            const major = (i - (TICKS - 1) / 2) % 5 === 0;
-            return <View key={i} style={{ width: 1, height: major ? 16 : 9, marginRight: spacing - 1, backgroundColor: tick }} />;
-          })}
+      <View style={{ height: 28, alignSelf: 'stretch', overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}>
+        <View style={{ flexDirection: 'row', transform: [{ translateX: -(angle / DIAL_DEG_PER_TICK) * DIAL_SPACING }] }}>
+          {ticks.map((major, i) => (
+            <View key={i} style={{ width: 1, height: major ? 16 : 9, marginRight: DIAL_SPACING - 1, backgroundColor: tick }} />
+          ))}
         </View>
-        <View pointerEvents="none" style={{ position: 'absolute', width: 2, height: 20, backgroundColor: fg, ...(active ? null : PILL) }} />
+        <View pointerEvents="none" style={{ position: 'absolute', width: 2, height: 22, backgroundColor: fg, ...(active ? null : PILL) }} />
       </View>
     </View>
   );
@@ -220,6 +230,8 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
   const angleRef = useRef(0); angleRef.current = angle;
   const [focus, setFocus] = useState<'ratio' | 'rotation'>('ratio');
   const [win, setWin] = useState<Rect>({ x: 0, y: 0, w: 0, h: 0 }); // okno kadru w układzie pola
+  const [zoom, setZoom] = useState(1); // zoom obrazu (1…MAX_ZOOM) — gest dwoma palcami
+  const zoomRef = useRef(1); zoomRef.current = zoom;
 
   const W = dims.W, H = dims.H;
   const ratio = ASPECTS[aspectIdx].key === 'ORIGINAL' ? W / H : ASPECTS[aspectIdx].ratio; // null = CUSTOM
@@ -235,6 +247,8 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
   const ratioRef = useRef<number | null>(ratio); ratioRef.current = ratio;
   const modeRef = useRef<Mode | null>(null);
   const startWinRef = useRef<Rect>(win);
+  const pinchRef = useRef<{ dist: number; ang: number; z0: number; a0: number } | null>(null);
+  const didPinchRef = useRef(false); // w tym geście były 2 palce → nie wracaj do przeciągania okna
 
   // reset okna kadru przy zmianie proporcji / pola / wymiarów (NIE przy rotacji — kąt nie resetuje kadru)
   useEffect(() => {
@@ -251,8 +265,26 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
         const { locationX, locationY } = e.nativeEvent;
         modeRef.current = hitTest(locationX, locationY, winRef.current);
         startWinRef.current = winRef.current;
+        pinchRef.current = null; didPinchRef.current = false;
       },
-      onPanResponderMove: (_e, g) => {
+      onPanResponderMove: (e, g) => {
+        const ts = e.nativeEvent.touches;
+        // DWA PALCE → zoom (1…MAX_ZOOM) + obrót obrazu
+        if (ts.length >= 2) {
+          didPinchRef.current = true;
+          const dx = ts[0].pageX - ts[1].pageX, dy = ts[0].pageY - ts[1].pageY;
+          const dist = Math.hypot(dx, dy);
+          const ang = (Math.atan2(dy, dx) * 180) / Math.PI;
+          if (!pinchRef.current) { pinchRef.current = { dist, ang, z0: zoomRef.current, a0: angleRef.current }; return; }
+          const p = pinchRef.current;
+          const z = clamp(p.z0 * (dist / p.dist), 1, MAX_ZOOM);
+          zoomRef.current = z; setZoom(z);
+          const na = clamp(p.a0 + (ang - p.ang), -MAX_ANGLE, MAX_ANGLE);
+          angleRef.current = na; setAngle(na);
+          return;
+        }
+        // JEDEN PALEC → kadr (narożnik = rozmiar, środek = przesunięcie). Po dwupalcowym geście — nic.
+        if (didPinchRef.current) return;
         const m = modeRef.current;
         if (!m) return;
         const s = startWinRef.current, b = rectRef.current;
@@ -269,8 +301,8 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
         winRef.current = next;
         setWin(next);
       },
-      onPanResponderRelease: () => { modeRef.current = null; },
-      onPanResponderTerminate: () => { modeRef.current = null; },
+      onPanResponderRelease: () => { modeRef.current = null; pinchRef.current = null; didPinchRef.current = false; },
+      onPanResponderTerminate: () => { modeRef.current = null; pinchRef.current = null; didPinchRef.current = false; },
     }),
   ).current;
 
@@ -285,20 +317,21 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
       else setAspectIdx((i) => (i + dir + ASPECTS.length) % ASPECTS.length);
     },
     rotateBy: (delta: number) => { setFocus('rotation'); setAngleClamped(angleRef.current + delta); },
-    reset: () => { setAspectIdx(DEFAULT_ASPECT); setAngleClamped(0); setWin(defaultWindow(1, rectRef.current)); },
+    reset: () => { setAspectIdx(DEFAULT_ASPECT); setAngleClamped(0); setZoom(1); zoomRef.current = 1; setWin(defaultWindow(1, rectRef.current)); },
     apply: async () => {
       if (!uri || area <= 0 || d0 <= 0) return null;
+      const d = d0 * zoomRef.current; // efektywna skala px→ekran (contain × zoom)
       const { Wr, Hr } = rotatedBox(W, H, angleRef.current);
-      const canvasLeft = area / 2 - (Wr * d0) / 2, canvasTop = area / 2 - (Hr * d0) / 2;
+      const canvasLeft = area / 2 - (Wr * d) / 2, canvasTop = area / 2 - (Hr * d) / 2;
       const w = winRef.current;
       const rect = {
-        originX: clamp((w.x - canvasLeft) / d0, 0, Math.max(0, Wr - 1)),
-        originY: clamp((w.y - canvasTop) / d0, 0, Math.max(0, Hr - 1)),
-        width: clamp(w.w / d0, 1, Wr),
-        height: clamp(w.h / d0, 1, Hr),
+        originX: clamp((w.x - canvasLeft) / d, 0, Math.max(0, Wr - 1)),
+        originY: clamp((w.y - canvasTop) / d, 0, Math.max(0, Hr - 1)),
+        width: clamp(w.w / d, 1, Wr),
+        height: clamp(w.h / d, 1, Hr),
       };
-      // czy kadr wychodzi poza obrócone zdjęcie → puste rogi (kandydat do wypełnienia AI)
-      const cx = area / 2, cy = area / 2, hw = (W * d0) / 2, hh = (H * d0) / 2, a = angleRef.current;
+      // czy kadr wychodzi poza obrócone (i zoomowane) zdjęcie → puste rogi (kandydat do wypełnienia AI)
+      const cx = area / 2, cy = area / 2, hw = (W * d) / 2, hh = (H * d) / 2, a = angleRef.current;
       const corners: [number, number][] = [[w.x, w.y], [w.x + w.w, w.y], [w.x, w.y + w.h], [w.x + w.w, w.y + w.h]];
       const needsFill = corners.some(([px, py]) => !insideRotRect(px, py, cx, cy, hw, hh, a));
 
@@ -336,7 +369,7 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
                 left: area / 2, top: area / 2,
                 width: imgW, height: imgH,
                 marginLeft: -imgW / 2, marginTop: -imgH / 2,
-                transform: [{ rotate: `${angle}deg` }],
+                transform: [{ scale: zoom }, { rotate: `${angle}deg` }],
               }}
             >
               <RNImage
