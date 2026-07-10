@@ -342,6 +342,7 @@ export function useSettingsScreen({
     ],
     joystick: {
       highlighted: true,
+      repeat: true, // przytrzymanie = powtarzaj (krok co 1)
       onUp: () => move(-1),
       onDown: () => move(1),
       onLeft: () => changeBy(-1),
@@ -360,7 +361,7 @@ export function useSettingsScreen({
       { type: 'label', upper: 'PREV', active: true, onPress: () => libMove(-1) },
       { type: 'label', upper: 'NEXT', active: true, onPress: () => libMove(1) },
     ],
-    joystick: { highlighted: true, onUp: () => libMove(-1), onDown: () => libMove(1), onPress: () => libToggle() },
+    joystick: { highlighted: true, repeat: true, onUp: () => libMove(-1), onDown: () => libMove(1), onPress: () => libToggle() },
   };
 
   const subContent = (

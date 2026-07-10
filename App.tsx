@@ -90,7 +90,9 @@ export default function App() {
   });
   const placeholder = usePlaceholderScreen(mode, cycleMode);
 
-  const variant = settings.fullscreen ? 'fullscreen' : 'device';
+  // pisanie promptu AI wymusza fullscreen + schowaną dolną obudowę (systemowa klawiatura) — wzorzec rec_ai
+  const editorTyping = mode === 'GALLERY' && gallery.typing;
+  const variant = settings.fullscreen || editorTyping ? 'fullscreen' : 'device';
 
   // Systemowy back (Android)/Escape (web): w GALLERY najpierw wyjście z folderu (goBack), potem z apki;
   // z innych trybów → powrót do GALLERY.
@@ -158,11 +160,12 @@ export default function App() {
           theme={settings.theme}
           motion={false}
           keyboard={keyboard}
+          hideControls={editorTyping}
           // pinch na OBUDOWIE → device/fullscreen
           onPinch={(dir) => settings.setFullscreen(dir === 'out')}
           // pinch na EKRANIE → liczba kolumn; swipe lewo/prawo → cykl efektu miniatur (pętla). Tylko w GALLERY.
           onScreenPinch={(dir) => { if (mode === 'GALLERY' && !gallery.viewerOpen && !gallery.menuOpen) gallery.pinchColumns(dir); }}
-          onScreenSwipe={(dir) => { if (mode === 'GALLERY') { settings.cycleScreenMode(dir === 'left' ? 1 : -1); gallery.showModeToast(); } }}
+          onScreenSwipe={(dir) => { if (mode === 'GALLERY' && !gallery.viewerOpen) { settings.cycleScreenMode(dir === 'left' ? 1 : -1); gallery.showModeToast(); } }}
           diag={settings.diag}
         >
           {base.content}

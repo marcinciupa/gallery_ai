@@ -82,6 +82,16 @@ export function hapticKnob(intensity: number) {
   play(pwm([{ ms: 28, from: intensity }]));
 }
 
+/** Bardzo krótki „tick" — pojedynczy stopień na pokrętle prostowania. */
+export function hapticTick() {
+  play([9]);
+}
+
+/** Nieco dłuższy „detent" — próg co 15° na pokrętle (wskoczenie). */
+export function hapticDetent() {
+  play([32]);
+}
+
 /**
  * Knob — powrót do stanu 0 (zawsze, też dla nieaktywnego knoba).
  *  - nieaktywny → POJEDYNCZY krótki tick (1:1 z klawiaturą, hapticShort/Release = 45 ms),

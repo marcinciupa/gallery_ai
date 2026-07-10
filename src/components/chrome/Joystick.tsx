@@ -8,7 +8,7 @@
  * Haptyka z Warstwy 0 (§9): hapticKnob na tick kierunku, hapticKnobReturn na powrót, hapticPress/Release
  * na środek.
  */
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Animated, PanResponder, View } from 'react-native';
 import { dims, gradient } from '../../theme/tokens';
 import { useTheme } from '../../theme/ThemeContext';
@@ -24,7 +24,10 @@ export type JoystickConfig = {
   onLeft?: () => void;
   onRight?: () => void;
   onPress?: () => void; // wciśnięcie środka
+  repeat?: boolean;     // przytrzymanie wychylenia → powtarzaj kierunek do puszczenia (auto-repeat)
 };
+
+type Dir = 'up' | 'down' | 'left' | 'right';
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
@@ -36,6 +39,20 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
   const tx = useRef(new Animated.Value(0)).current;
   const ty = useRef(new Animated.Value(0)).current;
   const fired = useRef(false);
+  const repeatTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const callDir = (dir: Dir) => {
+    const c = cfgRef.current;
+    (dir === 'right' ? c?.onRight : dir === 'left' ? c?.onLeft : dir === 'down' ? c?.onDown : c?.onUp)?.();
+  };
+  const stopRepeat = () => { if (repeatTimer.current) { clearInterval(repeatTimer.current); repeatTimer.current = null; } };
+  // przytrzymanie wychylenia (repeat) → powtarzaj kierunek co 120 ms aż do puszczenia
+  const startRepeat = (dir: Dir) => {
+    if (!cfgRef.current?.repeat) return;
+    stopRepeat();
+    repeatTimer.current = setInterval(() => { callDir(dir); hapticKnob(0.3); }, 120);
+  };
+  useEffect(() => () => stopRepeat(), []);
 
   const springBack = () => {
     Animated.spring(tx, { toValue: 0, useNativeDriver: false }).start();
@@ -62,14 +79,15 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
         const th = dims.joystick.dirThreshold;
         if (Math.abs(g.dx) > th || Math.abs(g.dy) > th) {
           fired.current = true;
-          const c = cfgRef.current;
           // dominująca oś decyduje o kierunku (4-kier., bez skosów)
-          if (Math.abs(g.dx) >= Math.abs(g.dy)) (g.dx > 0 ? c?.onRight : c?.onLeft)?.();
-          else (g.dy > 0 ? c?.onDown : c?.onUp)?.();
+          const dir: Dir = Math.abs(g.dx) >= Math.abs(g.dy) ? (g.dx > 0 ? 'right' : 'left') : (g.dy > 0 ? 'down' : 'up');
+          callDir(dir);
+          startRepeat(dir); // przy repeat: trzymanie wychylenia powtarza kierunek
           hapticKnob(0.5); // krótki impuls na zmianie (jak knob discrete)
         }
       },
       onPanResponderRelease: (_e, g) => {
+        stopRepeat();
         springBack();
         const moved = Math.hypot(g.dx, g.dy);
         const c = cfgRef.current;
@@ -83,6 +101,7 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
         fired.current = false;
       },
       onPanResponderTerminate: () => {
+        stopRepeat();
         springBack();
         fired.current = false;
       },
