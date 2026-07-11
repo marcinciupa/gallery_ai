@@ -38,6 +38,18 @@ Realny skeuomorfizm (tekstura, haptyka, tilt) tylko natywnie (Expo Go / dev buil
 5. Settings + **motywy parametryczne** (§11b.4).
 6. AI (§11b.5) — proxy vision, per-kafel status, na końcu.
 
+## AI + backend + publikacja — ZBUDOWANE (stan 2026-07-11)
+- **`server/`** — cienki backend-proxy (Node/Express + OpenAI SDK) do deAPI (OpenAI-compat `https://oai.deapi.ai/v1`).
+  Endpointy: `POST /api/v1/image-edits` (obraz+prompt), `/api/v1/image-fills`. Model `Flux_2_Klein_4B_BF16`, `enhance_prompt=1`.
+  Klucz deAPI TYLKO w `server/.env` (gitignored) — nigdy w apce/repo/pamięci. Deploy: Railway (patrz `server/README.md`).
+- **Apka**: `src/lib/deapi.ts` woła proxy (`EXPO_PUBLIC_API_URL` + nagłówek `X-App-Key`); `src/lib/localFile.ts` sprowadza
+  zdalny wynik do `file://` (upload/zapis/edycja łańcuchowa). AI działa TYLKO gdy `EXPO_PUBLIC_API_URL` wskazuje wdrożony
+  backend; bez tego `AI_STUB` (echo obrazu). Dodano `expo-file-system`.
+- **Google Play**: konto `pietrus914`, EAS `@pietrus914/gallery-ai`, pakiet `com.glue010.galleryai`, `eas.json` (profil
+  `production` → AAB). Pierwszy AAB: v0.924 / vc 9240 (AI w trybie STUB — backend jeszcze nie na Railway). Grafiki + opisy
+  EN w `store_assets/`. Polityka prywatności = publiczny Google Doc. Ikona launchera: zielony obiektyw (podmiana z placeholdera).
+- **NASTĘPNY KROK**: wdrożyć proxy na Railway → ustawić produkcyjny `EXPO_PUBLIC_API_URL` → rebuild (bump vc 9241) → AI działa.
+
 ## Kluczowe decyzje designowe (podjęte)
 - **Tryb wyświetlania ekranu = wybór użytkownika, 3 poziomy** (§11b.1): IMMERSIVE (B&W+fosfor+matryca),
   RETRO (matryca+fosfor, zdjęcia kolorowe), CLEAN (czyste zdjęcia). Filtr na realnych zdjęciach →

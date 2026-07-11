@@ -18,6 +18,7 @@ import { CropStage, CropHandle } from './CropStage';
 import { AiStage } from './AiStage';
 import { editImage, fillImage } from '../lib/deapi';
 import { saveImageToLibrary } from '../lib/saveImage';
+import { ensureLocalFile } from '../lib/localFile';
 
 const phosphorGlow = {
   textShadowColor: textShadow.phosphor.color,
@@ -208,7 +209,8 @@ export function useImageEditor({
     setProcessing(true); setAiError(null);
     try {
       const res = await fillImage({ uri: workingUri });
-      if (res?.uri) setWorkingUri(res.uri);
+      // wynik (zdalny https / data:) sprowadzamy do lokalnego pliku — pod zapis i kolejne edycje
+      if (res?.uri) setWorkingUri(await ensureLocalFile(res.uri));
       setFillOffer(false);
     } catch (e) {
       setAiError(e instanceof Error ? `ERROR: ${e.message}` : 'FILL FAILED');
@@ -231,7 +233,8 @@ export function useImageEditor({
     setProcessing(true); setAiError(null);
     try {
       const res = await editImage({ uri, prompt: p });
-      if (res?.uri) { setWorkingUri(res.uri); setDraft(''); setView('viewer'); }
+      // wynik (zdalny https / data:) sprowadzamy do lokalnego pliku — pod zapis i kolejne edycje
+      if (res?.uri) { setWorkingUri(await ensureLocalFile(res.uri)); setDraft(''); setView('viewer'); }
     } catch (e) {
       setAiError(e instanceof Error ? `ERROR: ${e.message}` : 'EDIT FAILED');
     } finally {
