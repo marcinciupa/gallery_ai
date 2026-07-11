@@ -1,0 +1,177 @@
+<style>
+  :root {
+    --bg: #f4f6f4;
+    --surface: #ffffff;
+    --text: #182018;
+    --muted: #55605a;
+    --accent: #157a3a;
+    --accent-soft: rgba(21, 122, 58, 0.10);
+    --line: rgba(20, 40, 25, 0.12);
+    --mono: ui-monospace, "Kode Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101311;
+      --surface: #171b18;
+      --text: #e7ece7;
+      --muted: #9aa69c;
+      --accent: #7cff9b;
+      --accent-soft: rgba(124, 255, 155, 0.10);
+      --line: rgba(226, 255, 228, 0.13);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #101311;
+    --surface: #171b18;
+    --text: #e7ece7;
+    --muted: #9aa69c;
+    --accent: #7cff9b;
+    --accent-soft: rgba(124, 255, 155, 0.10);
+    --line: rgba(226, 255, 228, 0.13);
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f6f4;
+    --surface: #ffffff;
+    --text: #182018;
+    --muted: #55605a;
+    --accent: #157a3a;
+    --accent-soft: rgba(21, 122, 58, 0.10);
+    --line: rgba(20, 40, 25, 0.12);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 56px 24px 72px;
+  }
+
+  header { border-bottom: 1px solid var(--line); padding-bottom: 28px; margin-bottom: 8px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 14px;
+  }
+  .wordmark {
+    font-family: var(--mono);
+    font-size: clamp(30px, 6vw, 40px);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .updated { font-family: var(--mono); font-size: 13px; color: var(--muted); margin: 12px 0 0; }
+
+  .tldr {
+    background: var(--accent-soft);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin: 32px 0;
+  }
+  .tldr h2 {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 12px;
+  }
+  .tldr ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 7px; }
+
+  section { margin-top: 34px; }
+  h2.sec {
+    font-family: var(--mono);
+    font-size: 15px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin: 0 0 10px;
+    color: var(--text);
+  }
+  p { margin: 0 0 12px; }
+  a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+  strong { font-weight: 600; }
+
+  footer {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .mail { font-family: var(--mono); }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Privacy Policy</p>
+    <h1 class="wordmark">Gallery_AI</h1>
+    <p class="updated">Last updated: 11 July 2026</p>
+  </header>
+
+  <div class="tldr">
+    <h2>The short version</h2>
+    <ul>
+      <li>No account, no sign-up.</li>
+      <li>No tracking, no analytics, no ads — we don't build a profile of you.</li>
+      <li>Your photos stay on your device — except a photo you deliberately choose to edit with AI, which is sent for processing.</li>
+      <li>We don't sell or share your data.</li>
+    </ul>
+  </div>
+
+  <p>This policy explains what data the Gallery_AI app ("the app", "we") handles and why. It applies wherever the app is used.</p>
+
+  <section>
+    <h2 class="sec">Photos &amp; media</h2>
+    <p>The app asks for permission to access the photos on your device so it can show them inside its gallery and let you open and edit them. This access is used only to display your own media within the app. Photos you don't edit never leave your device.</p>
+  </section>
+
+  <section>
+    <h2 class="sec">AI editing</h2>
+    <p>When you choose an AI feature — editing a photo from a text prompt, or generative fill — the image you selected and the text you typed are sent over a secure connection to a third-party AI image-processing service that generates the edited result and returns it to the app.</p>
+    <p>That image and prompt are used only to produce your result; they are not used to identify you or to train models on your behalf. We do not keep a permanent copy of your photos on our servers — images are processed transiently and results are available only for a short time. Please avoid submitting images that contain sensitive personal information.</p>
+  </section>
+
+  <section>
+    <h2 class="sec">What we don't collect</h2>
+    <p>We do not collect your name, email address, location, contacts, or advertising identifiers. The app contains no advertising or analytics SDKs, and we do not sell, rent, or share your personal data with anyone.</p>
+  </section>
+
+  <section>
+    <h2 class="sec">Permissions we use</h2>
+    <p><strong>Photos / media</strong> — to display your gallery and let you pick images to view or edit.</p>
+    <p><strong>Motion sensors</strong> — used only on your device for subtle visual motion (parallax) in the interface. This data is never collected or transmitted.</p>
+  </section>
+
+  <section>
+    <h2 class="sec">Children</h2>
+    <p>The app is not directed to children under 13, and we do not knowingly collect data from them.</p>
+  </section>
+
+  <section>
+    <h2 class="sec">Changes to this policy</h2>
+    <p>We may update this policy from time to time. Any changes will be posted at this page with a new "last updated" date.</p>
+  </section>
+
+  <section>
+    <h2 class="sec">Contact</h2>
+    <p>Questions about this policy or your data? Email us at <a class="mail" href="mailto:glue010@gmail.com">glue010@gmail.com</a>.</p>
+  </section>
+
+  <footer>
+    Gallery_AI — Privacy Policy · Last updated 11 July 2026
+  </footer>
+</div>

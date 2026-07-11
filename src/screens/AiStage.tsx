@@ -4,7 +4,8 @@
  * Pisanie: pole otwiera systemową klawiaturę; App chowa dolną obudowę i wchodzi w fullscreen (hideControls).
  */
 import { RefObject } from 'react';
-import { View, Text, Pressable, TextInput, ImageSourcePropType, Image as RNImage } from 'react-native';
+import { View, Text, Pressable, TextInput, ImageSourcePropType } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 import { color, font, screen, textShadow } from '../theme/tokens';
 
 const phosphorGlow = {
@@ -41,7 +42,7 @@ export function AiStage({
     <View style={{ flex: 1, alignSelf: 'stretch', gap: 8 }}>
       {/* obraz (podgląd edytowanego zdjęcia) */}
       <View style={{ flex: 1, alignSelf: 'stretch', borderRadius: 2, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}>
-        <RNImage source={source} resizeMode="contain" style={{ width: '100%', height: '100%' }} />
+        <ExpoImage source={source} contentFit="contain" cachePolicy="memory-disk" style={{ width: '100%', height: '100%' }} />
         {/* nakładka przetwarzania */}
         {processing ? (
           <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(26,26,26,0.55)' }}>
