@@ -49,11 +49,17 @@ Realny skeuomorfizm (tekstura, haptyka, tilt) tylko natywnie (Expo Go / dev buil
 - **Apka**: `src/lib/deapi.ts` woła proxy (`EXPO_PUBLIC_API_URL` + nagłówek `X-App-Key`); `src/lib/localFile.ts` sprowadza
   zdalny wynik do `file://` (upload/zapis/edycja łańcuchowa). AI działa TYLKO gdy `EXPO_PUBLIC_API_URL` wskazuje wdrożony
   backend; bez tego `AI_STUB` (echo obrazu). Dodano `expo-file-system`.
+- **⚠️ PUŁAPKA buildu EAS (powód, czemu 9240 wyszło STUB)**: `.env` jest gitignored → chmura EAS go NIE wysyła, więc
+  `EXPO_PUBLIC_*` nie trafiały do AAB. Rozwiązanie: zmienne muszą być w **EAS Environment `production`**
+  (`eas env:create --environment production --name EXPO_PUBLIC_API_URL --value <URL> --visibility plaintext`, tak samo
+  `EXPO_PUBLIC_APP_KEY`). Ustawione 2026-07-13. NIE wpisywać ich do `eas.json` (repo jest publiczne). Lokalny `.env`
+  zostaje do dev (Expo Go / web).
 - **Google Play**: konto `pietrus914`, EAS `@pietrus914/gallery-ai`, pakiet `com.glue010.galleryai`, `eas.json` (profil
   `production` → AAB). Pierwszy AAB: v0.924 / vc 9240 (AI w trybie STUB — backend jeszcze nie na Railway). Grafiki + opisy
   EN w `store_assets/`. Polityka prywatności = publiczny Google Doc. Ikona launchera: zielony obiektyw (podmiana z placeholdera).
-- **NASTĘPNY KROK**: proxy na Railway ✅, `EXPO_PUBLIC_API_URL` ustawiony na URL Railway w głównym `.env` ✅.
-  Zostało: **rebuild AAB (bump vc 9241)** i wysłać na Google Play → produkcyjne AI w apce.
+- **NASTĘPNY KROK**: proxy na Railway ✅, `EXPO_PUBLIC_API_URL` w `.env` + w EAS env `production` ✅, bump 0.925/vc 9241 ✅,
+  testy (tsc + expo-doctor 21/21) ✅, build AAB v0.925/vc 9241 z AI produkcyjnym w toku na EAS.
+  Zostało: pobrać AAB i **wysłać na Google Play** (ew. `eas submit -p android --profile production`).
 
 ## Kluczowe decyzje designowe (podjęte)
 - **Tryb wyświetlania ekranu = wybór użytkownika, 3 poziomy** (§11b.1): IMMERSIVE (B&W+fosfor+matryca),
