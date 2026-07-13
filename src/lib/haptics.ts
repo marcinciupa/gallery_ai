@@ -77,9 +77,10 @@ export function hapticRecordStop() {
   play([200, 110, 200]);
 }
 
-/** Knob: krótki impuls o sile proporcjonalnej do wychylenia (wywoływany throttlowany w trakcie ruchu). */
-export function hapticKnob(intensity: number) {
-  play(pwm([{ ms: 28, from: intensity }]));
+/** Knob: krótki impuls o sile proporcjonalnej do wychylenia (wywoływany throttlowany w trakcie ruchu).
+ *  `ms` = długość impulsu (domyślnie 28); mniejsze = krótsze „kliknięcie" (np. nawigacja po siatce). */
+export function hapticKnob(intensity: number, ms = 28) {
+  play(pwm([{ ms, from: intensity }]));
 }
 
 /** Bardzo krótki „tick" — pojedynczy stopień na pokrętle prostowania. */

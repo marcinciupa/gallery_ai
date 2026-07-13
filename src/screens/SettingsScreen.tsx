@@ -4,7 +4,8 @@
  *   góra/dół   = ruch zaznaczenia między wierszami
  *   lewo/prawo = zmiana wartości (cykl opcji)
  *   press      = zatwierdź (następna opcja)
- * Boczne klawisze (BUTTON_1/2, PREV/NEXT) to na razie placeholdery z labelami z Figmy — akcje TBD.
+ * Klawisze krawędziowe 1 i 5 = jak 1 i 3 w rec_ai: #1 kontekstowo zmienia wartość zaznaczonego
+ * wiersza (label pokazuje docelową wartość), #5 = NEXT (następny wiersz). PREV/NEXT (metal) — placeholdery.
  *
  * Sekcje: GALLERY / VIEWER / OTHER. Funkcjonalne wiersze (KEEP SCREEN ON, FULLSCREEN, LEFT-HANDED
  * MODE, THEME) sterują obudową; SETTING 1/2/3 to inertne placeholdery odwzorowujące mock z Figmy.
@@ -24,8 +25,13 @@ import { color, font, screen, textShadow, ThemeName } from '../theme/tokens';
 import type { KeyboardConfig } from '../components/chrome/Keyboard';
 import { ScreenTopBar, Mode, DisplayMode } from './ScreenChrome';
 import { Diag } from '../lib/diag';
+import { APP_VERSION } from '../version';
 
 const SETTINGS_KEY = 'galleryai.settings.v1'; // trwałość ustawień (AsyncStorage; web=localStorage)
+
+// długie pojedyncze słowa na labelach klawiszy → ręczny podział na 2 linie z dywizem (jak w rec_ai)
+const KEY_WRAP: Record<string, string> = { IMMERSIVE: 'IMMER-\nSIVE' };
+const keyWrap = (s: string) => KEY_WRAP[s] ?? s;
 
 const phosphorGlow = {
   textShadowColor: textShadow.phosphor.color,
@@ -149,23 +155,30 @@ const INITIAL_SECTIONS: SectionData[] = [
     ],
   },
   {
+    header: 'EDIT',
+    items: [
+      // prompt booster: przed edycją AI ulepszamy prompt użytkownika (stub)
+      { label: 'PROMPT BOOSTER', options: ['INACTIVE', 'ACTIVE'], value: 0 },
+    ],
+  },
+  {
     header: 'OTHER',
     items: [
       { label: 'FULLSCREEN', options: ['OFF', 'ON'], value: 0 }, // domyślnie DEVICE (pracujemy w tym trybie; mock Figmy miał ON)
       { label: 'LEFT-HANDED MODE', options: ['OFF', 'ON'], value: 0 },
       { label: 'THEME', options: ['LIGHT', 'DARK', 'ORANGE', 'NAVY'], value: 0 },
-      { label: 'PERF HUD', options: ['OFF', 'ON'], value: 0 }, // diagnostyka: licznik JS FPS (do usunięcia po perf)
+      { label: 'DISPLAY MATRIX', options: ['OFF', 'ON'], value: 1 }, // matryca ekranu (przeniesione z DIAGNOSTICS)
     ],
   },
-  // DIAGNOSTYKA (tymczasowe) — runtime'owy bisect janku; wyłączaj podsystemy i patrz, co przywraca 60fps.
+  // DIAGNOSTYKA (ukryta pod 10× tapnięciem w stopkę) — runtime'owy bisect janku; wyłączaj podsystemy.
   {
-    header: 'DIAG',
+    header: 'DIAGNOSTICS',
     items: [
+      { label: 'PERFORMANCE HUD', options: ['OFF', 'ON'], value: 0 }, // licznik JS FPS (przeniesione z OTHER)
       { label: 'GESTURES', options: ['OFF', 'ON'], value: 1 }, //  responder pinch/swipe
       { label: 'GRID', options: ['OFF', 'ON'], value: 1 }, //      siatka miniatur (FlatList)
       { label: 'FILTER', options: ['OFF', 'ON'], value: 1 }, //    filtr ekranowy (blend)
       { label: 'IMAGES', options: ['OFF', 'ON'], value: 1 }, //    expo-image w kaflach
-      { label: 'MATRIX', options: ['OFF', 'ON'], value: 1 }, //    matryca ekranu
       { label: 'GLOW', options: ['OFF', 'ON'], value: 1 }, //      poświata ekranu
       { label: 'SHEEN', options: ['OFF', 'ON'], value: 1 }, //     refleks ekranu
       { label: 'SHADOW', options: ['OFF', 'ON'], value: 1 }, //    inset shadow szyby
@@ -177,6 +190,8 @@ const INITIAL_SECTIONS: SectionData[] = [
 ];
 
 const TOTAL_ITEMS = INITIAL_SECTIONS.reduce((n, s) => n + s.items.length, 0);
+// DIAGNOSTICS jest OSTATNIą sekcją → jej wiersze to końcówka listy flat. Gdy ukryta, nawigacja kończy się przed nimi.
+const DIAG_COUNT = INITIAL_SECTIONS.find((s) => s.header === 'DIAGNOSTICS')?.items.length ?? 0;
 const SECTION_STARTS = (() => {
   const out: number[] = [];
   let acc = 0;
@@ -190,6 +205,7 @@ const SECTION_STARTS = (() => {
 export function useSettingsScreen({
   mode = 'SETTINGS',
   onCycleMode,
+  onBack,
   folders = [],
   included = [],
   excluded = [],
@@ -198,6 +214,7 @@ export function useSettingsScreen({
 }: {
   mode?: Mode;
   onCycleMode?: () => void;
+  onBack?: () => void; // BACK (klawisz 1) w widoku MAIN → powrót do GALLERY
   folders?: { id: string; name: string }[];
   included?: string[];
   excluded?: string[];
@@ -208,7 +225,15 @@ export function useSettingsScreen({
   const [selected, setSelected] = useState(0);
   const [view, setView] = useState<'MAIN' | 'INCLUDED' | 'EXCLUDED'>('MAIN'); // sub-widoki edytora filtra biblioteki
   const [libSel, setLibSel] = useState(0); // kursor w liście folderów sub-widoku
+  const [showDiag, setShowDiag] = useState(false); // sekcja DIAGNOSTICS ukryta; odkrywa 10× tapnięcie w stopkę
   const hydrated = useRef(false);
+  // licznik szybkich tapnięć w stopkę (easter-egg jak „build number" w Androidzie)
+  const footerTap = useRef({ count: 0, last: 0 });
+
+  // nawigowalna liczba wierszy: gdy DIAGNOSTICS ukryta, wykluczamy jej (końcowe) wiersze
+  const navTotal = showDiag ? TOTAL_ITEMS : TOTAL_ITEMS - DIAG_COUNT;
+  // ukrycie DIAGNOSTICS gdy kursor był w jej wierszach → wróć na początek
+  useEffect(() => { if (!showDiag) setSelected((i) => (i >= TOTAL_ITEMS - DIAG_COUNT ? 0 : i)); }, [showDiag]);
 
   // każde wejście w Settings → wraca na widok główny i pierwszy wiersz
   useEffect(() => {
@@ -277,7 +302,15 @@ export function useSettingsScreen({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { scrollToSelected(); }, [selected]);
 
-  const move = (dir: -1 | 1) => setSelected((i) => (i + dir + TOTAL_ITEMS) % TOTAL_ITEMS);
+  const move = (dir: -1 | 1) => setSelected((i) => (i + dir + navTotal) % navTotal);
+  // stopka: 10 szybkich tapnięć (≤500 ms odstęp) → przełącz widoczność sekcji DIAGNOSTICS
+  const onFooterTap = () => {
+    const now = Date.now();
+    const f = footerTap.current;
+    f.count = now - f.last < 500 ? f.count + 1 : 1;
+    f.last = now;
+    if (f.count >= 10) { f.count = 0; setShowDiag((s) => !s); }
+  };
   const flatItems = sections.flatMap((s) => s.items);
 
   // Zmiana wartości elementu o indeksie `idx` o `dir` opcji (locked → bez zmian).
@@ -333,13 +366,32 @@ export function useSettingsScreen({
     changeAt(idx, 1);
   };
 
-  // Klawiatura: nawigacją steruje joystick; boczne klawisze = placeholdery z labelami z Figmy.
+  // Klawisz #1 (jak w rec_ai) — kontekstowy: POKAZUJE wartość, na którą przełączy zaznaczony wiersz.
+  //  • wiersz-akcja (INCLUDED/EXCLUDED FOLDERS) → OPEN (otwiera sub-widok)
+  //  • przełącznik OFF/ON → TURN ON / TURN OFF (wg stanu)
+  //  • wielo-opcja (SCREEN, THEME) → następna wartość, np. IMMERSIVE; supporting [CYCLE]
+  // Akcja klawisza ta sama co joystick-prawo (changeBy(1)/openSub), zmienia się tylko etykieta.
+  const selItem = flatItems[selected];
+  const nextIdx = selItem ? (selItem.value + 1) % selItem.options.length : 0;
+  const nextOpt = selItem ? selItem.options[nextIdx] : '';
+  const key1Label = !selItem
+    ? 'CHANGE'
+    : selItem.action
+      ? 'OPEN'
+      : selItem.options.length === 2 && selItem.options.includes('OFF') && selItem.options.includes('ON')
+        ? (selItem.options[selItem.value] === 'ON' ? 'TURN OFF' : 'TURN ON')
+        : keyWrap(nextOpt);
+  const key1Supporting = selItem && !selItem.action && selItem.options.length > 2 ? '[CYCLE]' : undefined;
+
+  // Klawiatura: nawigacją steruje joystick. 1 = BACK (powrót do GALLERY), 2 = kontekstowa zmiana wartości
+  //   zaznaczonego wiersza (dawny klawisz 1, jak #1 w rec_ai), 5 = NEXT (następny wiersz).
   const keyboard: KeyboardConfig = {
-    screen: [{ label: 'BUTTON_1' }, { label: 'BUTTON_2' }],
-    metal: [
-      { type: 'label', upper: 'PREV', active: true },
-      { type: 'label', upper: 'NEXT', active: true },
+    screen: [
+      { label: 'BACK', onPress: () => { if (!goBack()) onBack?.(); } },
+      { label: 'NEXT', supporting: '[CYCLE]', onPress: () => move(1) },
     ],
+    // 2 = kontekstowa zmiana wartości (dawny klawisz 1, primary); 4 pusty. Nawigacja na joysticku.
+    metal: [{ type: 'label', upper: key1Label, lower: key1Supporting, variant: 'primary', onPress: () => changeBy(1) }, { type: 'label', upper: '' }],
     joystick: {
       highlighted: true,
       repeat: true, // przytrzymanie = powtarzaj (krok co 1)
@@ -351,16 +403,14 @@ export function useSettingsScreen({
     },
   };
 
-  // Klawiatura sub-widoku (INCLUDED/EXCLUDED): TOGGLE (dodaj/usuń zaznaczony) · PREV · JOY · NEXT.
+  // Klawiatura sub-widoku (INCLUDED/EXCLUDED): TOGGLE (dodaj/usuń zaznaczony) · JOY. Nawigacja na joysticku.
   const subKeyboard: KeyboardConfig = {
     screen: [
       { label: 'TOGGLE', variant: 'primary', onPress: () => libToggle() },
       { label: '' },
     ],
-    metal: [
-      { type: 'label', upper: 'PREV', active: true, onPress: () => libMove(-1) },
-      { type: 'label', upper: 'NEXT', active: true, onPress: () => libMove(1) },
-    ],
+    // klawisze 2/4 zostają WIDOCZNE, ale puste — prev/next tylko na joysticku (góra/dół)
+    metal: [{ type: 'label', upper: '' }, { type: 'label', upper: '' }],
     joystick: { highlighted: true, repeat: true, onUp: () => libMove(-1), onDown: () => libMove(1), onPress: () => libToggle() },
   };
 
@@ -403,27 +453,38 @@ export function useSettingsScreen({
         }}
       >
         <View ref={contentRef} style={{ gap: 24 }}>
-          {sections.map((section, si) => (
-            <Section key={section.header} header={section.header}>
-              {section.items.map((item, ii) => {
-                const flat = SECTION_STARTS[si] + ii;
-                return (
-                  <Row
-                    key={`${section.header}:${item.label}`}
-                    innerRef={(node) => {
-                      if (node) rowRefs.current.set(flat, node);
-                      else rowRefs.current.delete(flat);
-                    }}
-                    label={item.label}
-                    value={item.options[item.value]}
-                    selected={flat === selected}
-                    locked={item.locked}
-                    onPress={() => tapRow(flat)}
-                  />
-                );
-              })}
-            </Section>
-          ))}
+          {sections.map((section, si) => {
+            // DIAGNOSTICS ukryta, dopóki nie odkryta 10× tapnięciem w stopkę
+            if (section.header === 'DIAGNOSTICS' && !showDiag) return null;
+            return (
+              <Section key={section.header} header={section.header}>
+                {section.items.map((item, ii) => {
+                  const flat = SECTION_STARTS[si] + ii;
+                  return (
+                    <Row
+                      key={`${section.header}:${item.label}`}
+                      innerRef={(node) => {
+                        if (node) rowRefs.current.set(flat, node);
+                        else rowRefs.current.delete(flat);
+                      }}
+                      label={item.label}
+                      value={item.options[item.value]}
+                      selected={flat === selected}
+                      locked={item.locked}
+                      onPress={() => tapRow(flat)}
+                    />
+                  );
+                })}
+              </Section>
+            );
+          })}
+
+          {/* STOPKA — nazwa/wersja; 10× szybkie tapnięcie odkrywa/chowa sekcję DIAGNOSTICS (jak build number w Androidzie) */}
+          <Pressable onPress={onFooterTap} style={{ alignItems: 'center', gap: 2, paddingTop: 8, paddingBottom: 4 }}>
+            <Text style={{ fontFamily: font.monoHeading.family, fontSize: font.monoHeading.size, color: screen.olive.primary, ...phosphorGlow }}>GALLERY AI</Text>
+            <Text style={{ fontFamily: font.monoCaption.family, fontSize: font.monoCaption.size, color: screen.olive.secondary, textAlign: 'center' }}>SKEUOMORPHIC AI GALLERY</Text>
+            <Text style={{ fontFamily: font.monoCaption.family, fontSize: font.monoCaption.size, color: screen.olive.inactive, textAlign: 'center', marginTop: 2 }}>{`VERSION ${APP_VERSION}  ·  © 2026`}</Text>
+          </Pressable>
         </View>
       </ScrollView>
     </>
@@ -441,13 +502,15 @@ export function useSettingsScreen({
   const keepScreenOn = ksoItem ? ksoItem.options[ksoItem.value] === 'ON' : false;
   const scrItem = flat.find((it) => it.label === 'SCREEN');
   const screenMode = (scrItem ? scrItem.options[scrItem.value] : 'IMMERSIVE') as DisplayMode;
-  const perfItem = flat.find((it) => it.label === 'PERF HUD');
+  const perfItem = flat.find((it) => it.label === 'PERFORMANCE HUD');
   const perfHud = perfItem ? perfItem.options[perfItem.value] === 'ON' : false;
+  const pbItem = flat.find((it) => it.label === 'PROMPT BOOSTER');
+  const promptBooster = pbItem ? pbItem.options[pbItem.value] === 'ACTIVE' : false;
   // DIAG: obiekt flag z sekcji DIAG (domyślnie ON, gdy brak wiersza)
   const diagVal = (label: string) => { const it = flat.find((i) => i.label === label); return it ? it.options[it.value] === 'ON' : true; };
   const diag: Diag = {
     gestures: diagVal('GESTURES'), grid: diagVal('GRID'), filter: diagVal('FILTER'), images: diagVal('IMAGES'),
-    matrix: diagVal('MATRIX'), glow: diagVal('GLOW'), sheen: diagVal('SHEEN'), shadow: diagVal('SHADOW'),
+    matrix: diagVal('DISPLAY MATRIX'), glow: diagVal('GLOW'), sheen: diagVal('SHEEN'), shadow: diagVal('SHADOW'),
     texture: diagVal('TEXTURE'), bevels: diagVal('BEVELS'), clip: diagVal('CLIP'),
   };
 
@@ -464,6 +527,7 @@ export function useSettingsScreen({
     keepScreenOn,
     screenMode,
     perfHud,
+    promptBooster,
     diag,
   };
 }

@@ -113,32 +113,37 @@ const PhotoTile = memo(function PhotoTile({ source, size, selected, images, onPr
 // pozycja = ciemna „pigułka" z zielonym tekstem i bulletem „•". Nawigacja joystick góra/dół + press (lub tap).
 const MENU_ITEMS = ['SORT', 'FILTER MEDIA', 'SHOW HIDDEN ELEMENTS', 'OPEN TRASH BIN', 'CREATE NEW FOLDER', 'SETTINGS'] as const;
 
-function GalleryMenu({ index, onPick }: { index: number; onPick: (i: number) => void }) {
+function GalleryMenu({ index, onPick, leftHanded = false }: { index: number; onPick: (i: number) => void; leftHanded?: boolean }) {
   const txt = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size } as const;
+  // popover trzyma się klawisza MENU: domyślnie prawy dolny róg; w trybie left-handed klawiatura jest
+  // lustrzana → MENU po lewej, więc i menu po lewej.
   return (
     <View
-      style={{ position: 'absolute', right: 0, bottom: 0, padding: 8, gap: 8, borderRadius: 2, backgroundColor: screen.olive.primary, boxShadow: '0px 0px 4px 0px rgba(226,255,228,0.25)' } as any}
+      style={{ position: 'absolute', ...(leftHanded ? { left: 0 } : { right: 0 }), bottom: 0, padding: 8, gap: 8, borderRadius: 2, backgroundColor: screen.olive.primary, boxShadow: '0px 0px 4px 0px rgba(226,255,228,0.25)' } as any}
     >
-      {MENU_ITEMS.map((label, i) =>
-        i === index ? (
-          <Pressable key={label} onPress={() => onPick(i)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', paddingVertical: 2, paddingRight: 4, paddingLeft: 2, borderRadius: 2, backgroundColor: color.dark21 }}>
-            <Text style={{ ...txt, color: screen.olive.primary, ...phosphorGlow }}>{'•'}</Text>
-            <Text style={{ ...txt, color: screen.olive.primary, ...phosphorGlow }}>{label}</Text>
+      {MENU_ITEMS.map((label, i) => {
+        const sel = i === index;
+        // każdy wiersz ma tę samą strukturę (bullet + label + padding) → szerokość menu = najszerszy label,
+        // stała niezależnie od zaznaczenia (bullet przezroczysty, gdy niezaznaczony — rezerwuje miejsce).
+        return (
+          <Pressable
+            key={label}
+            onPress={() => onPick(i)}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', paddingVertical: 2, paddingRight: 4, paddingLeft: 2, borderRadius: 2, backgroundColor: sel ? color.dark21 : 'transparent' }}
+          >
+            <Text style={{ ...txt, color: sel ? screen.olive.primary : 'transparent', ...(sel ? phosphorGlow : null) }}>{'•'}</Text>
+            <Text style={{ ...txt, color: sel ? screen.olive.primary : color.dark21, ...(sel ? phosphorGlow : null) }}>{label}</Text>
           </Pressable>
-        ) : (
-          <Pressable key={label} onPress={() => onPick(i)}>
-            <Text style={{ ...txt, color: color.dark21 }}>{label}</Text>
-          </Pressable>
-        ),
-      )}
+        );
+      })}
     </View>
   );
 }
 
-const FOLDER_GAP = 10; // odstęp w siatce folderów (ROOT)
-const PHOTO_GAP = 4; //  odstęp w siatce zdjęć (wnętrze folderu — gęściej)
+const FOLDER_GAP = 8; // odstęp między kolumnami w siatce folderów (ROOT)
+const PHOTO_GAP = 8; //  odstęp między kolumnami w siatce zdjęć (spójny z feedem — FEED_GAP)
 
-export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings, media, allFolders = EMPTY_FOLDERS, included = [], excluded = [], displayMode = 'IMMERSIVE', diag = DIAG_ALL }: { mode?: Mode; onCycleMode?: () => void; onOpenSettings?: () => void; media?: ReturnType<typeof useMedia>; allFolders?: Folder[]; included?: string[]; excluded?: string[]; displayMode?: DisplayMode; diag?: Diag } = {}) {
+export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings, media, allFolders = EMPTY_FOLDERS, included = [], excluded = [], displayMode = 'IMMERSIVE', diag = DIAG_ALL, leftHanded = false, promptBooster = false }: { mode?: Mode; onCycleMode?: () => void; onOpenSettings?: () => void; media?: ReturnType<typeof useMedia>; allFolders?: Folder[]; included?: string[]; excluded?: string[]; displayMode?: DisplayMode; diag?: Diag; leftHanded?: boolean; promptBooster?: boolean } = {}) {
   const [cols, setCols] = useState<2 | 3>(2); // VIEW: 2 (medium) ↔ 3 (small)
   const [selected, setSelected] = useState(0);
   const [openFolder, setOpenFolder] = useState<number | null>(null); // null = ROOT (foldery); index = wnętrze
@@ -212,7 +217,9 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     // (index ≥ liczby wierszy → wyjątek). Zaznaczenie i tak jest w tym wierszu, więc centrujemy wiersz.
     const row = Math.floor(selected / cols);
     try { listRef.current?.scrollToIndex({ index: row, animated: true, viewPosition: 0.5 }); } catch {}
-  }, [selected, openFolder, cols]);
+    // UWAGA: bez `cols` w zależnościach — na zmianę rozmiaru (THUMB SIZE) FlatList jest REMONTOWANY (key=cols)
+    // i wtedy scrollToIndex odpaliłby się z niezmierzonym viewportem (visibleLength=0) → skok o ~½ kafla.
+  }, [selected, openFolder]);
 
   const move = (d: number) => setSelected((i) => Math.max(0, Math.min(n - 1, i + d)));
   const toggleView = () => setCols((c) => (c === 2 ? 3 : 2));
@@ -246,6 +253,8 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     onExit: closeViewer,
     onPrev: () => move(-1),
     onNext: () => move(1),
+    leftHanded,
+    promptBooster,
   });
 
   // MENU
@@ -271,21 +280,25 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const imgSize = itemWidth > 0 ? itemWidth - gap : 0;
   const rowHeight = imgSize + gap + (inside ? 0 : 34); // +podpis dla folderów (getItemLayout → pewny scrollToIndex)
 
-  // Klawiatura wg projektu (354:5109 / 386:5645): FEED VIEW · PREV · JOYSTICK · NEXT · MENU.
-  // Lewy „screen": FEED VIEW (w folderach) ⇄ GALLERY VIEW (w feedzie) — wchodzi/wychodzi z feeda.
-  // Gęstość 2/3 kol.: pinch na ekranie. MENU → popover; gdy otwarte = CLOSE MENU (zielony, variant primary).
+  // Klawiatura: 1 = BACK (tylko gdy jest dokąd cofać: folder/feed; w domyślnym ROOT pusty), 2 = FEED VIEW
+  // (w folderach) ⇄ GALLERY VIEW (w feedzie), 4 = THUMB SIZE (cykl gęstości 2/3 kol.), 5 = MENU (otwarte =
+  // CLOSE MENU, zielony). Gęstość też pinch na ekranie.
+  const canBack = inside || feedMode; // w ROOT nie ma dokąd cofać → brak BACK
   const keyboard: KeyboardConfig = {
     screen: [
-      { label: feedMode ? 'GALLERY\nVIEW' : 'FEED\nVIEW', onPress: toggleFeed },
+      canBack ? { label: 'BACK', onPress: () => { goBack(); } } : { label: '' },
       { label: menuOpen ? 'CLOSE\nMENU' : 'MENU', variant: menuOpen ? 'primary' : 'default', onPress: toggleMenu },
     ],
+    // 2 = FEED/GALLERY VIEW; 4 = THUMB SIZE (dwie linie w głównym labelu, nie support) → zmiana rozmiaru miniatur.
     metal: [
-      { type: 'label', upper: 'PREV', active: true, onPress: () => { if (!menuOpen) move(-1); } },
-      { type: 'label', upper: 'NEXT', active: true, onPress: () => { if (!menuOpen) move(1); } },
+      { type: 'label', upper: feedMode ? 'GALLERY\nVIEW' : 'FEED\nVIEW', onPress: toggleFeed },
+      { type: 'label', upper: 'THUMB\nSIZE', onPress: toggleView },
     ],
     joystick: {
       highlighted: true,
       repeat: true, // przytrzymanie = powtarzaj nawigację (krok co 1 element / wiersz)
+      shortStepHaptic: true, // krótszy haptic przy przełączaniu miniatur w gallery/feed
+
       onUp: () => { if (menuOpen) menuMove(-1); else if (!viewerOpen) move(-cols); },
       onDown: () => { if (menuOpen) menuMove(1); else if (!viewerOpen) move(cols); },
       onLeft: () => { if (!menuOpen) move(-1); },   // w podglądzie: poprzednie zdjęcie
@@ -300,6 +313,9 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const content = (
     <>
       <ScreenTopBar mode={mode} label={feedMode ? 'FEED' : undefined} onCycleMode={onCycleMode} />
+
+      {/* content_area: przy otwartym menu przygaszona do 25% widoczności (menu zostaje pełne, poza tym wrapperem) */}
+      <View style={{ flex: 1, alignSelf: 'stretch', opacity: menuOpen && !viewerOpen ? 0.25 : 1 }}>
 
       {/* breadcrumb tylko we wnętrzu folderu; tap = wyjście do listy folderów */}
       {!feedMode && inside && folders[openFolder!] ? (
@@ -402,8 +418,10 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
         </View>
       ) : null}
 
-      {/* MENU (popover) — nad siatką, gdy nie ma podglądu */}
-      {menuOpen && !viewerOpen ? <GalleryMenu index={menuIndex} onPick={pickMenu} /> : null}
+      </View>
+
+      {/* MENU (popover) — nad siatką, gdy nie ma podglądu; podąża za klawiszem MENU (left-handed → lewy róg) */}
+      {menuOpen && !viewerOpen ? <GalleryMenu index={menuIndex} onPick={pickMenu} leftHanded={leftHanded} /> : null}
     </>
   );
 

@@ -25,6 +25,7 @@ export type JoystickConfig = {
   onRight?: () => void;
   onPress?: () => void; // wciśnięcie środka
   repeat?: boolean;     // przytrzymanie wychylenia → powtarzaj kierunek do puszczenia (auto-repeat)
+  shortStepHaptic?: boolean; // krótszy impuls na krok (np. szybka nawigacja po siatce gallery/feed)
 };
 
 type Dir = 'up' | 'down' | 'left' | 'right';
@@ -46,11 +47,12 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
     (dir === 'right' ? c?.onRight : dir === 'left' ? c?.onLeft : dir === 'down' ? c?.onDown : c?.onUp)?.();
   };
   const stopRepeat = () => { if (repeatTimer.current) { clearInterval(repeatTimer.current); repeatTimer.current = null; } };
+  const stepMs = () => (cfgRef.current?.shortStepHaptic ? 14 : 28); // krótszy „klik" przy szybkiej nawigacji
   // przytrzymanie wychylenia (repeat) → powtarzaj kierunek co 120 ms aż do puszczenia
   const startRepeat = (dir: Dir) => {
     if (!cfgRef.current?.repeat) return;
     stopRepeat();
-    repeatTimer.current = setInterval(() => { callDir(dir); hapticKnob(0.3); }, 120);
+    repeatTimer.current = setInterval(() => { callDir(dir); hapticKnob(0.3, stepMs()); }, 120);
   };
   useEffect(() => () => stopRepeat(), []);
 
@@ -83,7 +85,7 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
           const dir: Dir = Math.abs(g.dx) >= Math.abs(g.dy) ? (g.dx > 0 ? 'right' : 'left') : (g.dy > 0 ? 'down' : 'up');
           callDir(dir);
           startRepeat(dir); // przy repeat: trzymanie wychylenia powtarza kierunek
-          hapticKnob(0.5); // krótki impuls na zmianie (jak knob discrete)
+          hapticKnob(0.5, stepMs()); // krótki impuls na zmianie (jak knob discrete)
         }
       },
       onPanResponderRelease: (_e, g) => {

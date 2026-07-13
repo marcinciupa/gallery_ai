@@ -55,6 +55,38 @@ export async function fillImage({ uri }: { uri: string }): Promise<ImageEditResu
   return postImage('/api/v1/image-fills', uri);
 }
 
+export type PromptBoostResult = { prompt: string };
+
+/**
+ * Prompt booster — ulepsza prompt użytkownika PRZED edycją obrazu, żeby model lepiej wykonał zadanie
+ * (doprecyzowanie, styl, zachowanie kompozycji). Wejście/wyjście: sam tekst (bez obrazu).
+ * STUB: zwraca prompt bez zmian po krótkim opóźnieniu. Realnie: proxy → LLM (deAPI/OpenRouter) przepisuje.
+ */
+export async function boostPrompt({ prompt }: { prompt: string }): Promise<PromptBoostResult> {
+  if (AI_STUB) {
+    await sleep(900);
+    return { prompt }; // STUB — echo; realnie backend zwróci przepisany prompt
+  }
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 30000);
+  try {
+    const res = await fetch(`${BASE}/api/v1/prompt-boost`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...appKeyHeader },
+      body: JSON.stringify({ prompt }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw new ApiError(res.status, `prompt-boost failed (${res.status})`);
+    const json: { prompt?: string } = await res.json();
+    return { prompt: json.prompt || prompt }; // fallback: oryginał, gdy backend nic nie zwróci
+  } catch (e) {
+    if (e instanceof ApiError) throw e;
+    throw new ApiError(0, e instanceof Error ? e.message : 'network error');
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /** Wspólne wysłanie obrazu (+pola) do proxy; kontrakt odpowiedzi: 200 { uri?; image_base64? }. */
 async function postImage(path: string, uri: string, fields: Record<string, string> = {}): Promise<ImageEditResult> {
   const form = new FormData();

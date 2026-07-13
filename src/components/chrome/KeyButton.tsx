@@ -229,6 +229,7 @@ export function ScreenKey({
   label,
   supporting,
   variant = 'default',
+  active = true,
   onPress,
   onLongPress,
   onHoldComplete,
@@ -239,6 +240,8 @@ export function ScreenKey({
   label: string;
   supporting?: string;
   variant?: KeyVariant;
+  /** false = wygaszony (przygaszony phosphor, bez poświaty) — odpowiednik metalowego `active:false`. */
+  active?: boolean;
   onPress?: () => void;
   onLongPress?: () => void;
   onHoldComplete?: () => void;
@@ -249,9 +252,11 @@ export function ScreenKey({
   const dark = variant === 'primary' || variant === 'highRisk';
   const fg = dark ? color.dark1A : variant === 'risk' ? color.recordRed : color.phosphor;
   const glowColor = variant === 'risk' ? 'rgba(255,76,76,0.25)' : textShadow.phosphor.color;
-  const glow = dark
-    ? null
-    : { textShadowColor: glowColor, textShadowRadius: 4, textShadowOffset: { width: 0, height: 0 } as const };
+  const glow =
+    dark || !active
+      ? null
+      : { textShadowColor: glowColor, textShadowRadius: 4, textShadowOffset: { width: 0, height: 0 } as const };
+  const dim = active ? 1 : 0.4;
 
   const progress = useRef(new Animated.Value(0)).current;
   const holdTimer = useRef<any>(null);
@@ -308,6 +313,7 @@ export function ScreenKey({
           fontFamily: font.monoLabel.family,
           fontSize: font.monoLabel.size,
           color: fg,
+          opacity: dim,
           textAlign: 'center',
           ...glow,
         }}
@@ -320,6 +326,7 @@ export function ScreenKey({
             fontFamily: font.monoCaption.family,
             fontSize: font.monoCaption.size,
             color: fg,
+            opacity: dim,
             textAlign: 'center',
             ...glow,
           }}

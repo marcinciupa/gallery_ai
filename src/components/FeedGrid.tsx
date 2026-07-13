@@ -83,13 +83,17 @@ export const FeedGrid = memo(function FeedGrid({
   onCycleSpan: (i: number) => void;
   onOpen: (i: number) => void;
 }) {
+  // Geometria 1:1 z gallery view: kolumna = width/cols (pitch), kafel 1× = kolumna − gap, margines zewn. = gap/2
+  // (odpowiednik `padding: gap/2` na kaflach FlatListy). Dzięki temu feed ma tę samą szerokość i marginesy.
   const gap = FEED_GAP;
-  const cell = (width - (cols - 1) * gap) / cols;
-  const step = cell + gap;
+  const col = width / cols;   // szerokość kolumny (= itemWidth w gallery)
+  const cell = col - gap;     // rozmiar kafla 1× (= obraz w gallery: itemWidth − gap)
+  const step = col;           // krok siatki = szerokość kolumny
+  const inset = gap / 2;      // margines zewnętrzny (jak gap/2 na kaflach gallery)
 
   const spanArr = useMemo(() => data.map((_, i) => Math.min(spans[i] || 1, cols)), [data.length, spans, cols]);
   const { pos, rows } = useMemo(() => packFeed(spanArr, cols), [spanArr, cols]);
-  const totalH = rows > 0 ? rows * step - gap : 0;
+  const totalH = rows > 0 ? rows * step : 0; // + margines gap/2 u góry i dołu (symetrycznie z gallery)
 
   const scrollRef = useRef<ScrollView>(null);
   const [viewH, setViewH] = useState(0);
@@ -111,7 +115,7 @@ export const FeedGrid = memo(function FeedGrid({
     const p = pos[selected];
     if (!p || viewH <= 0) return;
     const sizeSel = p.k * cell + (p.k - 1) * gap;
-    const target = Math.max(0, p.r * step - viewH / 2 + sizeSel / 2);
+    const target = Math.max(0, p.r * step + inset + sizeSel / 2 - viewH / 2);
     try { scrollRef.current?.scrollTo({ y: target, animated: true }); } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, cols]);
@@ -127,14 +131,14 @@ export const FeedGrid = memo(function FeedGrid({
     >
       <View style={{ height: totalH }}>
         {pos.map((p, i) => {
-          const y = p.r * step;
+          const y = p.r * step + inset;
           const size = p.k * cell + (p.k - 1) * gap;
           if (y + size < win.top || y > win.bottom) return null; // poza oknem → nie montuj
           return (
             <FeedTile
               key={i}
               source={data[i]}
-              x={p.c * step}
+              x={p.c * step + inset}
               y={y}
               size={size}
               selected={i === selected}

@@ -16,7 +16,7 @@ import type { KeyboardConfig } from '../components/chrome/Keyboard';
 import { ScreenTopBar, AiStatusView } from './ScreenChrome';
 import { CropStage, CropHandle } from './CropStage';
 import { AiStage } from './AiStage';
-import { editImage, fillImage } from '../lib/deapi';
+import { editImage, fillImage, boostPrompt } from '../lib/deapi';
 import { saveImageToLibrary } from '../lib/saveImage';
 
 const phosphorGlow = {
@@ -119,24 +119,28 @@ function ZoomImage({ source }: { source: ImageSourcePropType }) {
 }
 
 /** Menu EDIT — popover fosforowy (jak menu galerii): zaznaczona pozycja = ciemna pigułka z bulletem „•". */
-function EditMenu({ index, onPick }: { index: number; onPick: (i: number) => void }) {
+function EditMenu({ index, onPick, leftHanded = false }: { index: number; onPick: (i: number) => void; leftHanded?: boolean }) {
   const txt = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size } as const;
+  // popover trzyma się klawisza menu (EDIT/MENU): domyślnie prawy dolny róg; left-handed → lewy.
   return (
     <View
-      style={{ position: 'absolute', right: 0, bottom: 0, padding: 8, gap: 8, borderRadius: 2, backgroundColor: screen.olive.primary, boxShadow: '0px 0px 4px 0px rgba(226,255,228,0.25)' } as any}
+      style={{ position: 'absolute', ...(leftHanded ? { left: 0 } : { right: 0 }), bottom: 0, padding: 8, gap: 8, borderRadius: 2, backgroundColor: screen.olive.primary, boxShadow: '0px 0px 4px 0px rgba(226,255,228,0.25)' } as any}
     >
-      {EDIT_MENU.map((label, i) =>
-        i === index ? (
-          <Pressable key={label} onPress={() => onPick(i)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', paddingVertical: 2, paddingRight: 4, paddingLeft: 2, borderRadius: 2, backgroundColor: color.dark21 }}>
-            <Text style={{ ...txt, color: screen.olive.primary, ...phosphorGlow }}>{'•'}</Text>
-            <Text style={{ ...txt, color: screen.olive.primary, ...phosphorGlow }}>{label}</Text>
+      {EDIT_MENU.map((label, i) => {
+        const sel = i === index;
+        // każdy wiersz ma tę samą strukturę (bullet + label + padding) → szerokość menu = najszerszy label,
+        // stała niezależnie od zaznaczenia (bullet przezroczysty, gdy niezaznaczony — rezerwuje miejsce).
+        return (
+          <Pressable
+            key={label}
+            onPress={() => onPick(i)}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', paddingVertical: 2, paddingRight: 4, paddingLeft: 2, borderRadius: 2, backgroundColor: sel ? color.dark21 : 'transparent' }}
+          >
+            <Text style={{ ...txt, color: sel ? screen.olive.primary : 'transparent', ...(sel ? phosphorGlow : null) }}>{'•'}</Text>
+            <Text style={{ ...txt, color: sel ? screen.olive.primary : color.dark21, ...(sel ? phosphorGlow : null) }}>{label}</Text>
           </Pressable>
-        ) : (
-          <Pressable key={label} onPress={() => onPick(i)}>
-            <Text style={{ ...txt, color: color.dark21 }}>{label}</Text>
-          </Pressable>
-        ),
-      )}
+        );
+      })}
     </View>
   );
 }
@@ -147,12 +151,18 @@ export function useImageEditor({
   onExit,
   onPrev,
   onNext,
+  onCycleMode,
+  leftHanded = false,
+  promptBooster = false,
 }: {
   source?: ImageSourcePropType;
   open: boolean;         // podgląd otwarty (galeria: viewerOpen)
   onExit: () => void;    // zamknij podgląd → powrót do siatki
   onPrev: () => void;    // poprzednie zdjęcie
   onNext: () => void;    // następne zdjęcie
+  onCycleMode?: () => void; // kliknięcie kafelka trybu → cykl GALLERY/VIEWER/SETTINGS (tylko tryb VIEWER)
+  leftHanded?: boolean;  // klawiatura lustrzana → popover menu po lewej
+  promptBooster?: boolean; // ustawienie EDIT/PROMPT BOOSTER — ulepsz prompt AI przed edycją
 }): { content: ReactNode; keyboard: KeyboardConfig; goBack: () => boolean; typing: boolean } {
   const [view, setView] = useState<EditView>('viewer');
   const [menuOpen, setMenuOpen] = useState(false);
@@ -166,6 +176,7 @@ export function useImageEditor({
   const [typing, setTyping] = useState(false);
   const [draft, setDraft] = useState('');
   const [processing, setProcessing] = useState(false);
+  const [boosting, setBoosting] = useState(false); // trwa ulepszanie promptu (prompt booster) przed edycją
   const [aiError, setAiError] = useState<string | null>(null);
   const inputRef = useRef<TextInput>(null);
   // SAVE — krótki komunikat po zapisie edytowanego obrazu
@@ -176,7 +187,7 @@ export function useImageEditor({
 
   // zamknięcie podglądu → reset do stanu wyjściowego, żeby następne otwarcie zaczynało od VIEWER
   useEffect(() => {
-    if (!open) { setView('viewer'); setMenuOpen(false); setMenuIndex(0); setWorkingUri(null); setTyping(false); setDraft(''); setProcessing(false); setAiError(null); setSaved(null); setFillOffer(false); }
+    if (!open) { setView('viewer'); setMenuOpen(false); setMenuIndex(0); setWorkingUri(null); setTyping(false); setDraft(''); setProcessing(false); setBoosting(false); setAiError(null); setSaved(null); setFillOffer(false); }
   }, [open]);
   // zmiana zdjęcia (PREV/NEXT) → porzuć wynik edycji poprzedniego
   useEffect(() => { setWorkingUri(null); setFillOffer(false); }, [source]);
@@ -224,13 +235,22 @@ export function useImageEditor({
   const cancelTyping = () => { setTyping(false); inputRef.current?.blur(); };
   const sendPrompt = async () => {
     const p = draft.trim();
-    if (!p || processing) return;
+    if (!p || processing || boosting) return;
     setTyping(false); inputRef.current?.blur();
     const uri = resolveUri(displaySource);
     if (!uri) { setAiError('NO IMAGE SOURCE'); return; }
-    setProcessing(true); setAiError(null);
+    setAiError(null);
+    // PROMPT BOOSTER: najpierw ulepsz prompt (stub); jeśli booster padnie, jedź na oryginalnym promptcie
+    let prompt = p;
+    if (promptBooster) {
+      setBoosting(true);
+      try { const b = await boostPrompt({ prompt: p }); prompt = b.prompt || p; }
+      catch { /* fallback: oryginalny prompt */ }
+      finally { setBoosting(false); }
+    }
+    setProcessing(true);
     try {
-      const res = await editImage({ uri, prompt: p });
+      const res = await editImage({ uri, prompt });
       if (res?.uri) { setWorkingUri(res.uri); setDraft(''); setView('viewer'); }
     } catch (e) {
       setAiError(e instanceof Error ? `ERROR: ${e.message}` : 'EDIT FAILED');
@@ -251,7 +271,7 @@ export function useImageEditor({
 
   // back: (processing = blokada) → oferta fill → pisanie → menu → pod-widok → (false = zamknij podgląd)
   const goBack = (): boolean => {
-    if (processing) return true;               // w trakcie edycji/wypełniania AI back nic nie robi (blokada)
+    if (processing || boosting) return true;   // w trakcie boostu/edycji/wypełniania AI back nic nie robi (blokada)
     if (fillOffer) { setFillOffer(false); return true; }
     if (typing) { setTyping(false); return true; }
     if (menuOpen) { setMenuOpen(false); return true; }
@@ -261,15 +281,21 @@ export function useImageEditor({
 
   // etykieta paska statusu + status AI (deAPI). Pulsuje w trakcie przetwarzania (edycja AI / wypełnianie).
   const label = view === 'viewer' ? 'VIEWER' : 'EDIT';
-  const ai: AiStatusView | undefined = processing
-    ? { lines: ['AI IMAGE EDIT', view === 'ai' ? 'PROCESSING…' : 'GENERATIVE FILL…'], pulse: true }
-    : view === 'ai'
-      ? { lines: ['AI IMAGE EDIT', 'WITH DEAPI'], pulse: false }
-      : undefined;
+  const ai: AiStatusView | undefined = boosting
+    ? { lines: ['PROMPT BOOSTER', 'BOOSTING…'], pulse: true }
+    : processing
+      ? { lines: ['AI IMAGE EDIT', view === 'ai' ? 'PROCESSING…' : 'GENERATIVE FILL…'], pulse: true }
+      : view === 'ai'
+        // gdy booster aktywny → pasek zapowiada PROMPT BOOSTER WITH DEAPI (dwie linie obok ikony AI)
+        ? { lines: promptBooster ? ['PROMPT BOOSTER', 'WITH DEAPI'] : ['AI IMAGE EDIT', 'WITH DEAPI'], pulse: false }
+        : undefined;
 
-  // KLAWIATURA per pod-widok/stan. VIEWER: EDIT · PREV · joy · NEXT · MENU (EDIT/MENU otwierają menu,
-  // joystick press = wyjście do siatki, L/R = prev/next). Menu otwarte: lewy = akcja zaznaczonej pozycji
-  // (KEYBOARD dla AI EDIT, CROP dla CROP & ROTATE), prawy = CLOSE MENU; joystick góra/dół = wybór.
+  // KLAWIATURA per pod-widok/stan. VIEWER: EDIT · · joy · · MENU (EDIT/MENU otwierają menu,
+  // joystick press = wyjście do siatki, L/R = prev/next — poprzednie/następne zdjęcie MA joystick, nie klawisze).
+  // Menu otwarte: lewy = akcja zaznaczonej pozycji (KEYBOARD dla AI EDIT, CROP dla CROP & ROTATE),
+  // prawy = CLOSE MENU; joystick góra/dół = wybór. Sloty metalowe (2/4) puste poza CROP (ROTATE ‹/›).
+  // sloty metalowe (2/4) bez funkcji prev/next — WIDOCZNE puste klawisze (szkło), nie dziury
+  const metalBlank: KeyboardConfig['metal'] = [{ type: 'label', upper: '' }, { type: 'label', upper: '' }];
   let keyboard: KeyboardConfig;
   if (view === 'crop') {
     // CROP & ROTATE (dwustopniowe): BACK · ROTATE‹ · joystick · ROTATE› · APPLY.
@@ -281,8 +307,9 @@ export function useImageEditor({
         { label: 'APPLY', variant: 'primary', onPress: applyCrop },
       ],
       metal: [
-        { type: 'label', upper: 'ROTATE', lower: '‹', active: true, onPress: () => cropRef.current?.rotateBy(-1) },
-        { type: 'label', upper: 'ROTATE', lower: '›', active: true, onPress: () => cropRef.current?.rotateBy(1) },
+        // poz. 2 = ROTATE CCW (w lewo), poz. 4 = ROTATE CW (w prawo) — górna linia ROTATE, dolna CCW/CW
+        { type: 'label', upper: 'ROTATE', lower: 'CCW', active: true, onPress: () => cropRef.current?.rotateBy(-1) },
+        { type: 'label', upper: 'ROTATE', lower: 'CW', active: true, onPress: () => cropRef.current?.rotateBy(1) },
       ],
       joystick: {
         highlighted: true,
@@ -295,23 +322,19 @@ export function useImageEditor({
       },
     };
   } else if (view === 'ai') {
-    // AI EDIT: idle → KEYBOARD(otwórz klawiaturę)·BACK; typing → CANCEL·SEND; processing → klawisze wygaszone.
-    const metalOff: KeyboardConfig['metal'] = [
-      { type: 'label', upper: 'PREV', active: false },
-      { type: 'label', upper: 'NEXT', active: false },
-    ];
-    if (processing) {
-      keyboard = { screen: [{ label: '' }, { label: '' }], metal: metalOff, joystick: { highlighted: false } };
+    // AI EDIT: idle → KEYBOARD(otwórz klawiaturę)·BACK; typing → CANCEL·SEND; boost/processing → klawisze wygaszone.
+    if (processing || boosting) {
+      keyboard = { screen: [{ label: '' }, { label: '' }], metal: metalBlank, joystick: { highlighted: false } };
     } else if (typing) {
       keyboard = {
         screen: [{ label: 'CANCEL', onPress: cancelTyping }, { label: 'SEND', variant: 'primary', onPress: sendPrompt }],
-        metal: metalOff,
+        metal: metalBlank,
         joystick: { highlighted: true, onPress: sendPrompt },
       };
     } else {
       keyboard = {
         screen: [{ label: 'KEY-\nBOARD', variant: 'primary', onPress: openKeyboard }, { label: 'BACK', onPress: toViewer }],
-        metal: metalOff,
+        metal: metalBlank,
         joystick: { highlighted: true, onPress: openKeyboard },
       };
     }
@@ -321,10 +344,7 @@ export function useImageEditor({
         { label: menuIndex === 0 ? 'KEY-\nBOARD' : 'CROP', onPress: () => pick(menuIndex) },
         { label: 'CLOSE\nMENU', variant: 'primary', onPress: closeMenu },
       ],
-      metal: [
-        { type: 'label', upper: 'PREV', active: false },
-        { type: 'label', upper: 'NEXT', active: false },
-      ],
+      metal: metalBlank,
       joystick: {
         highlighted: true,
         onUp: () => menuMove(-1),
@@ -333,13 +353,9 @@ export function useImageEditor({
       },
     };
   } else {
-    const metalOff2: KeyboardConfig['metal'] = [
-      { type: 'label', upper: 'PREV', active: false },
-      { type: 'label', upper: 'NEXT', active: false },
-    ];
     if (processing) {
       // trwa wypełnianie AI (fill) — klawisze wygaszone
-      keyboard = { screen: [{ label: '' }, { label: '' }], metal: metalOff2, joystick: { highlighted: false } };
+      keyboard = { screen: [{ label: '' }, { label: '' }], metal: metalBlank, joystick: { highlighted: false } };
     } else if (fillOffer) {
       // po kadrze z obrotem: propozycja wypełnienia pustych obszarów AI
       keyboard = {
@@ -347,22 +363,19 @@ export function useImageEditor({
           { label: 'SKIP', onPress: skipFill },
           { label: 'FILL\nAI', variant: 'primary', onPress: fillAI },
         ],
-        metal: metalOff2,
+        metal: metalBlank,
         joystick: { highlighted: true, onPress: fillAI },
       };
     } else {
       keyboard = {
+        // 1 = BACK (wyjście z podglądu), 2 = EDIT (menu edycji); 5 = SAVE gdy jest edycja, inaczej MENU
         screen: [
-          { label: 'EDIT', onPress: openMenu },
-          // prawy klawisz: SAVE gdy jest edycja do zapisania, inaczej MENU (otwiera menu EDIT)
+          { label: 'BACK', onPress: onExit },
           workingUri
             ? { label: 'SAVE', variant: 'primary', onPress: saveWorking }
             : { label: 'MENU', onPress: openMenu },
         ],
-        metal: [
-          { type: 'label', upper: 'PREV', active: true, onPress: onPrev },
-          { type: 'label', upper: 'NEXT', active: true, onPress: onNext },
-        ],
+        metal: [{ type: 'label', upper: 'EDIT', onPress: openMenu }, { type: 'label', upper: '' }],
         joystick: {
           highlighted: true,
           onLeft: onPrev,
@@ -375,30 +388,33 @@ export function useImageEditor({
 
   const content = (
     <>
-      <ScreenTopBar mode="VIEWER" label={label} onCycleMode={undefined} ai={ai} labelActive />
+      <ScreenTopBar mode="VIEWER" label={label} onCycleMode={view === 'viewer' ? onCycleMode : undefined} ai={ai} labelActive />
       <View style={{ flex: 1, alignSelf: 'stretch' }}>
-        {view === 'viewer' ? (
-          displaySource ? <ZoomImage key={workingUri ?? String((source as any)?.uri ?? source)} source={displaySource} /> : null
-        ) : view === 'crop' ? (
-          displaySource ? <CropStage ref={cropRef} source={displaySource} /> : null
-        ) : (
-          displaySource ? (
-            <AiStage
-              source={displaySource}
-              draft={draft}
-              typing={typing}
-              processing={processing}
-              error={aiError}
-              inputRef={inputRef}
-              onChangeText={setDraft}
-              onSubmit={sendPrompt}
-              onBlur={() => setTyping(false)}
-              onOpenKeyboard={openKeyboard}
-            />
-          ) : null
-        )}
+        {/* content_area: przy otwartym menu przygaszona do 25% widoczności (menu zostaje pełne) */}
+        <View style={{ flex: 1, alignSelf: 'stretch', opacity: menuOpen && view === 'viewer' ? 0.25 : 1 }}>
+          {view === 'viewer' ? (
+            displaySource ? <ZoomImage key={workingUri ?? String((source as any)?.uri ?? source)} source={displaySource} /> : null
+          ) : view === 'crop' ? (
+            displaySource ? <CropStage ref={cropRef} source={displaySource} /> : null
+          ) : (
+            displaySource ? (
+              <AiStage
+                source={displaySource}
+                draft={draft}
+                typing={typing}
+                processing={processing}
+                error={aiError}
+                inputRef={inputRef}
+                onChangeText={setDraft}
+                onSubmit={sendPrompt}
+                onBlur={() => setTyping(false)}
+                onOpenKeyboard={openKeyboard}
+              />
+            ) : null
+          )}
+        </View>
         {/* menu EDIT — popover nad obrazem (prawy-dolny róg), tylko w widoku VIEWER */}
-        {menuOpen && view === 'viewer' ? <EditMenu index={menuIndex} onPick={pick} /> : null}
+        {menuOpen && view === 'viewer' ? <EditMenu index={menuIndex} onPick={pick} leftHanded={leftHanded} /> : null}
 
         {/* propozycja wypełnienia AI (puste obszary po obrocie) — banner przy dolnej krawędzi */}
         {view === 'viewer' && fillOffer && !processing ? (

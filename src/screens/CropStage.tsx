@@ -12,6 +12,7 @@
  */
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, PanResponder, Image as RNImage, ImageSourcePropType, LayoutChangeEvent } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { color, font, screen, textShadow } from '../theme/tokens';
 import { hapticTick, hapticDetent } from '../lib/haptics';
@@ -44,6 +45,17 @@ function rotatedBox(W: number, H: number, deg: number) {
   const s = Math.abs(Math.sin(r));
   const c = Math.abs(Math.cos(r));
   return { Wr: H * s + W * c, Hr: H * c + W * s };
+}
+
+// Skala korygująca przy OBROCIE: obraz nigdy nie robi się węższy (poziomo) niż w stanie 0°, więc nie
+// pojawiają się puste pasy po bokach. `imgW`/`imgH` = ekranowy rozmiar obrazu przy θ=0 (contain). extentX =
+// pozioma rozpiętość prostokąta po obrocie; kotwica = imgW (rozpiętość przy 0°). Dla θ=0 → 1 (bez zmian);
+// przy obrocie rośnie tak, by rozpiętość ≥ imgW. Obrazy wypełniające szerokość przy 0° (poziome) wypełniają
+// ją więc na każdym kącie.
+function rotationFillScale(imgW: number, imgH: number, deg: number) {
+  const r = (deg * Math.PI) / 180;
+  const extentX = imgW * Math.abs(Math.cos(r)) + imgH * Math.abs(Math.sin(r));
+  return extentX > 0 ? Math.max(1, imgW / extentX) : 1;
 }
 
 // czy punkt (px,py) jest wewnątrz prostokąta obrazu (środek cx,cy, półboki hw,hh) obróconego o `deg`
@@ -261,7 +273,8 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
   const uri = norm?.uri ?? rawUri;
   const imgSource: ImageSourcePropType = norm ? { uri: norm.uri } : source;
 
-  const [area, setArea] = useState(0);          // bok kwadratowego pola (px ekranu)
+  const [areaW, setAreaW] = useState(0);        // szer. pola roboczego (px) — wypełnia content_area
+  const [areaH, setAreaH] = useState(0);        // wys. pola roboczego (px) — wypełnia content_area
   const [aspectIdx, setAspectIdx] = useState(DEFAULT_ASPECT);
   const [angle, setAngle] = useState(0);
   const angleRef = useRef(0); angleRef.current = angle;
@@ -272,15 +285,18 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
 
   const W = norm ? norm.W : dims.W, H = norm ? norm.H : dims.H; // wymiary znormalizowanego obrazu
   const ratio = ASPECTS[aspectIdx].key === 'ORIGINAL' ? W / H : ASPECTS[aspectIdx].ratio; // null = CUSTOM
-  const d0 = area > 0 ? Math.min(area / W, area / H) : 0; // skala „contain" (całe zdjęcie widoczne, θ=0)
+  const d0 = areaW > 0 && areaH > 0 ? Math.min(areaW / W, areaH / H) : 0; // skala „contain" (całe zdjęcie widoczne, θ=0)
   const imageRect: Rect = useMemo(
-    () => ({ x: (area - W * d0) / 2, y: (area - H * d0) / 2, w: W * d0, h: H * d0 }),
-    [area, W, H, d0],
+    () => ({ x: (areaW - W * d0) / 2, y: (areaH - H * d0) / 2, w: W * d0, h: H * d0 }),
+    [areaW, areaH, W, H, d0],
   );
 
   // refy dla PanRespondera (tworzony raz) — bieżąca geometria/okno/tryb
   const winRef = useRef(win); winRef.current = win;
   const rectRef = useRef(imageRect); rectRef.current = imageRect;
+  // granice przeciągania/skalowania okna = całe POLE ROBOCZE (nie tylko contain) — po obrocie/wypełnieniu
+  // szerokości obraz jest większy, więc okno musi móc go objąć; puste obszary → oferta AI-fill.
+  const boundsRef = useRef<Rect>({ x: 0, y: 0, w: 0, h: 0 }); boundsRef.current = { x: 0, y: 0, w: areaW, h: areaH };
   const ratioRef = useRef<number | null>(ratio); ratioRef.current = ratio;
   const modeRef = useRef<Mode | null>(null);
   const startWinRef = useRef<Rect>(win);
@@ -289,10 +305,10 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
 
   // reset okna kadru przy zmianie proporcji / pola / wymiarów (NIE przy rotacji — kąt nie resetuje kadru)
   useEffect(() => {
-    if (area <= 0) return;
+    if (areaW <= 0 || areaH <= 0) return;
     setWin(defaultWindow(ratio, imageRect));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aspectIdx, area, W, H]);
+  }, [aspectIdx, areaW, areaH, W, H]);
 
   const responder = useRef(
     PanResponder.create({
@@ -326,7 +342,7 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
         if (didPinchRef.current) return;
         const m = modeRef.current;
         if (!m) return;
-        const s = startWinRef.current, b = rectRef.current;
+        const s = startWinRef.current, b = boundsRef.current;
         let next: Rect;
         if (m === 'move') {
           next = {
@@ -358,10 +374,12 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
     rotateBy: (delta: number) => { setFocus('rotation'); setAngleClamped(angleRef.current + delta); },
     reset: () => { setAspectIdx(DEFAULT_ASPECT); setAngleClamped(0); setZoom(1); zoomRef.current = 1; setWin(defaultWindow(1, rectRef.current)); },
     apply: async () => {
-      if (!uri || area <= 0 || d0 <= 0) return null;
-      const d = d0 * zoomRef.current; // efektywna skala px→ekran (contain × zoom)
+      if (!uri || areaW <= 0 || areaH <= 0 || d0 <= 0) return null;
+      // efektywna skala px→ekran = contain × zoom × wypełnienie-szerokości-przy-obrocie (spójne z transformem)
+      const fillW = rotationFillScale(W * d0, H * d0, angleRef.current);
+      const d = d0 * zoomRef.current * fillW;
       const { Wr, Hr } = rotatedBox(W, H, angleRef.current);
-      const canvasLeft = area / 2 - (Wr * d) / 2, canvasTop = area / 2 - (Hr * d) / 2;
+      const canvasLeft = areaW / 2 - (Wr * d) / 2, canvasTop = areaH / 2 - (Hr * d) / 2;
       const w = winRef.current;
       const rect = {
         originX: clamp((w.x - canvasLeft) / d, 0, Math.max(0, Wr - 1)),
@@ -370,7 +388,7 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
         height: clamp(w.h / d, 1, Hr),
       };
       // czy kadr wychodzi poza obrócone (i zoomowane) zdjęcie → puste rogi (kandydat do wypełnienia AI)
-      const cx = area / 2, cy = area / 2, hw = (W * d) / 2, hh = (H * d) / 2, a = angleRef.current;
+      const cx = areaW / 2, cy = areaH / 2, hw = (W * d) / 2, hh = (H * d) / 2, a = angleRef.current;
       const corners: [number, number][] = [[w.x, w.y], [w.x + w.w, w.y], [w.x, w.y + w.h], [w.x + w.w, w.y + w.h]];
       const needsFill = corners.some(([px, py]) => !insideRotRect(px, py, cx, cy, hw, hh, a));
 
@@ -384,44 +402,53 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
         return null;
       }
     },
-  }), [uri, area, d0, W, H]);
+  }), [uri, areaW, areaH, d0, W, H]);
 
   const imgW = W * d0, imgH = H * d0;
+  const fillW = rotationFillScale(imgW, imgH, angle); // przy obrocie dobij skalę, by obraz nie zwężał się poniżej 0°
   const dim = { position: 'absolute' as const, backgroundColor: 'rgba(26,26,26,0.6)' };
   const stroke = 'rgba(226,255,228,0.25)';
 
   return (
     <View style={{ flex: 1, alignSelf: 'stretch', gap: 16 }}>
-      {/* POLE KADRU — kwadrat = szerokość treści; holder flex:1 wypełnia górę, sterowanie płynie pod nim */}
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-        <View
-          onLayout={(e: LayoutChangeEvent) => { const w = e.nativeEvent.layout.width; setArea((a) => (Math.abs(a - w) < 1 ? a : w)); }}
-          style={{ width: '100%', aspectRatio: 1, borderRadius: 2, overflow: 'hidden' }}
-          {...responder.panHandlers}
-        >
+      {/* POLE KADRU — WYPEŁNIA content_area (cała szer. i wys. nad sterowaniem), nie kwadrat (Figma 405:6554).
+          Zdjęcie „contain" wyśrodkowane w polu; portrety używają pełnej szerokości zamiast wpisywać się w kwadrat. */}
+      <View
+        onLayout={(e: LayoutChangeEvent) => {
+          const { width, height } = e.nativeEvent.layout;
+          setAreaW((a) => (Math.abs(a - width) < 1 ? a : width));
+          setAreaH((a) => (Math.abs(a - height) < 1 ? a : height));
+        }}
+        style={{ flex: 1, alignSelf: 'stretch', borderRadius: 2, overflow: 'hidden' }}
+        {...responder.panHandlers}
+      >
           {/* zdjęcie „contain", obracane o θ wokół środka */}
-          {area > 0 && d0 > 0 ? (
+          {areaW > 0 && areaH > 0 && d0 > 0 ? (
             <View
               pointerEvents="none"
               style={{
                 position: 'absolute',
-                left: area / 2, top: area / 2,
+                left: areaW / 2, top: areaH / 2,
                 width: imgW, height: imgH,
                 marginLeft: -imgW / 2, marginTop: -imgH / 2,
-                transform: [{ scale: zoom }, { rotate: `${angle}deg` }],
+                transform: [{ scale: zoom * fillW }, { rotate: `${angle}deg` }],
               }}
             >
-              <RNImage
+              {/* expo-image (nie RNImage): trzyma poprzednią klatkę przy zmianie źródła i korzysta z cache
+                  z viewera → brak „flasha" przy podmianie raw → znormalizowany PNG. transition=0 = bez przenikania. */}
+              <ExpoImage
                 source={imgSource}
-                resizeMode="stretch"
-                onLoad={(ev: any) => { const s = ev?.nativeEvent?.source; if (s?.width && s?.height) setDims({ W: s.width, H: s.height }); }}
+                contentFit="fill"
+                cachePolicy="memory-disk"
+                transition={0}
+                onLoad={(ev: any) => { const s = ev?.source; if (s?.width && s?.height) setDims({ W: s.width, H: s.height }); }}
                 style={{ width: '100%', height: '100%' }}
               />
             </View>
           ) : null}
 
           {/* przyciemnienie poza oknem kadru (4 pasy) + ramka + narożne uchwyty „L" */}
-          {area > 0 && win.w > 0 ? (
+          {areaW > 0 && win.w > 0 ? (
             <>
               <View pointerEvents="none" style={{ ...dim, left: 0, right: 0, top: 0, height: win.y }} />
               <View pointerEvents="none" style={{ ...dim, left: 0, right: 0, top: win.y + win.h, bottom: 0 }} />
@@ -431,7 +458,6 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
               <CornerMarks left={win.x} top={win.y} w={win.w} h={win.h} />
             </>
           ) : null}
-        </View>
       </View>
 
       {/* STEROWANIE (dwustopniowe): aktywny panel podświetlony. Tap w panel = fokus + akcja. */}

@@ -10,7 +10,7 @@ import { View } from 'react-native';
 import { dims, gradient } from '../../theme/tokens';
 import { useTheme } from '../../theme/ThemeContext';
 import { Bevel } from './primitives';
-import { MetalLabelKey, RecordKey, ScreenKey, KeyVariant } from './KeyButton';
+import { RecordKey, ScreenKey, KeyVariant } from './KeyButton';
 import { Joystick, JoystickConfig } from './Joystick';
 
 /** Definicja klawisza "screen" (krawędzie). Pusty label = klawisz bez treści (widmo). */
@@ -27,7 +27,7 @@ export type ScreenKeyDef = {
 };
 /** Definicja klawisza "metal" (wewnątrz, PREV/NEXT): etykietowany albo record/shutter. */
 export type MetalKeyDef =
-  | { type: 'label'; upper: string; lower?: string; active?: boolean; lowerActive?: boolean; onPress?: () => void }
+  | { type: 'label'; upper: string; lower?: string; active?: boolean; lowerActive?: boolean; variant?: KeyVariant; onPress?: () => void }
   | { type: 'record'; onPress?: () => void };
 
 /**
@@ -41,8 +41,16 @@ const EMPTY_KEYBOARD: KeyboardConfig = { screen: [], metal: [] };
 function MetalKey({ def }: { def?: MetalKeyDef }) {
   if (!def) return <View style={{ width: dims.key.size, height: dims.key.size }} />;
   if (def.type === 'record') return <RecordKey onPress={def.onPress} />;
+  // Klawisze wewnętrzne (poz. 2 i 4, dawniej metalowe PREV/NEXT/ROTATE) renderujemy jako "screen"
+  // — ciemna szyba + matryca + phosphor — zachowując dotychczasowy label. `active:false` → wygaszony.
   return (
-    <MetalLabelKey upper={def.upper} lower={def.lower} active={def.active} lowerActive={def.lowerActive} onPress={def.onPress} />
+    <ScreenKey
+      label={def.upper}
+      supporting={def.lower}
+      variant={def.variant}
+      active={def.active}
+      onPress={def.active === false ? undefined : def.onPress}
+    />
   );
 }
 
