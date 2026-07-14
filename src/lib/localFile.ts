@@ -7,12 +7,14 @@
  * Bez pobrania do pliku łańcuchowa edycja (edycja już-edytowanego zdjęcia), generative-fill i ZAPIS
  * cicho padały. Pobranie w momencie edycji uniezależnia też apkę od wygaśnięcia podpisanego URL-a.
  *
- * Lokalne schematy (file/content/asset/ph) zwracamy bez zmian — są już nadające się do uploadu/zapisu.
- * Import z `expo-file-system/legacy` = stabilne API (downloadAsync/writeAsStringAsync) w SDK 56.
+ * Tylko realny `file://` zwracamy bez zmian. `content://` (galeria/MediaStore Androida), `asset://`, `ph://`
+ * są czytelne przez ContentResolver, ale `uploadAsync` ORAZ `MediaLibrary` wymagają PRAWDZIWEJ ścieżki
+ * pliku — więc kopiujemy je do cache (inaczej uploadAsync rzuca „Directory ... doesn't exist").
+ * Import z `expo-file-system/legacy` = stabilne API (downloadAsync/writeAsStringAsync/copyAsync) w SDK 56.
  */
 import * as FileSystem from 'expo-file-system/legacy';
 
-const LOCAL_SCHEME = /^(file|content|asset|ph):/i;
+const CONTENT_SCHEME = /^(content|asset|ph):/i;
 const EXT_RE = /\.(png|jpe?g|webp)(?:\?|$)/i;
 
 let seq = 0;
@@ -25,7 +27,15 @@ function cacheDest(ext: string): string {
 /** Zwraca lokalny `file://` (lub oryginał, jeśli już lokalny). Rzuca przy błędzie pobrania/zapisu. */
 export async function ensureLocalFile(uri: string): Promise<string> {
   if (!uri) throw new Error('empty uri');
-  if (LOCAL_SCHEME.test(uri)) return uri;
+  if (/^file:/i.test(uri)) return uri; // realny plik — od razu OK pod upload/zapis
+
+  // content:// / asset:// / ph:// — skopiuj bajty przez resolver do realnego pliku w cache.
+  if (CONTENT_SCHEME.test(uri)) {
+    const ext = (uri.match(EXT_RE)?.[1] ?? 'jpg').toLowerCase(); // MediaStore URI nie ma rozszerzenia → domyślnie jpg
+    const dest = cacheDest(ext);
+    await FileSystem.copyAsync({ from: uri, to: dest });
+    return dest;
+  }
 
   if (uri.startsWith('data:')) {
     const comma = uri.indexOf(',');
