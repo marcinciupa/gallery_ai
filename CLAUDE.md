@@ -38,14 +38,20 @@ Realny skeuomorfizm (tekstura, haptyka, tilt) tylko natywnie (Expo Go / dev buil
 5. Settings + **motywy parametryczne** (§11b.4).
 6. AI (§11b.5) — proxy vision, per-kafel status, na końcu.
 
-## AI + backend + publikacja — ZBUDOWANE (stan 2026-07-11)
-- **`server/`** — cienki backend-proxy (Node/Express + OpenAI SDK) do deAPI (OpenAI-compat `https://oai.deapi.ai/v1`).
-  Endpointy: `POST /api/v1/image-edits` (obraz+prompt), `/api/v1/image-fills`. Model `Flux_2_Klein_4B_BF16`, `enhance_prompt=1`.
-  Klucz deAPI TYLKO w `server/.env` (gitignored) — nigdy w apce/repo/pamięci. Deploy: Railway (patrz `server/README.md`).
-  **WDROŻONY (2026-07-13)**: Railway projekt `gallery-ai-backend` (workspace Pietrus914), URL
-  `https://gallery-ai-backend-production.up.railway.app`. Deploy przez CLI `railway up` z folderu `server/`
-  (repo należy do `marcinciupa`, więc nie GitHub-integration). Zmienne (`DEAPI_API_KEY`, `APP_KEY`, `DEAPI_MODEL`,
-  `DEAPI_STEPS`) ustawione w Railway Variables. `/health` OK, `image-edits` przetestowany end-to-end — AI działa naprawdę.
+## AI + backend + publikacja — ZBUDOWANE (backend przepisany na v2 REST, 2026-07-14)
+- **`server/`** — cienki backend-proxy (Node/Express) do **deAPI natywny REST v2** (`https://api.deapi.ai`).
+  Endpointy: `POST /api/v1/{image-edits, image-fills, remove-background, image-erase}` + `prompt-boost` (passthrough)
+  + `POST /webhooks/deapi` (odbiornik callbacków). Modele: edycja `Flux_2_Klein_4B_BF16` (img2img, wymaga `seed`),
+  usuwanie tła **dedykowany `Ben2`** (alt. `RMBG-1.4`). deAPI v2 jest ASYNC: submit→`request_id`→wynik przez
+  **webhook (HMAC) z fallbackiem na polling** `GET /api/v2/jobs/{id}`; proxy trzyma połączenie apki synchronicznie.
+- **⚠️ KLUCZ deAPI — dwa realmy auth (łatwo się pomylić)**: format `<id>|<token>` (np. `13660|…`). OpenAI-compat
+  (`oai.deapi.ai/v1`, stary backend) WYMAGAŁ prefiksu `dpn-sk-`; **REST v2 (`api.deapi.ai`) prefiksu NIE przyjmuje**
+  (401). Serwer odcina `dpn-sk-` na potrzeby v2, więc `DEAPI_API_KEY` może być z prefiksem lub bez.
+- Klucz deAPI + `DEAPI_WEBHOOK_SECRET` TYLKO w `server/.env` (gitignored) / Railway Variables — nigdy w apce/repo/pamięci.
+  **WDROŻONY**: Railway `gallery-ai-backend` (Pietrus914), URL `https://gallery-ai-backend-production.up.railway.app`,
+  deploy `railway up` z `server/` (repo `marcinciupa`, więc nie GitHub-integration). Railway auto-wstrzykuje `PORT`
+  i `RAILWAY_PUBLIC_DOMAIN` (→ webhook_url). Zmienne: `DEAPI_API_KEY`, `APP_KEY`, `DEAPI_MODEL`, `DEAPI_STEPS`,
+  `DEAPI_BG_MODEL`, `DEAPI_WEBHOOK_SECRET`. Wszystkie 4 trasy obrazów przetestowane end-to-end (Ben2 tło, Flux edycja).
 - **Apka**: `src/lib/deapi.ts` woła proxy (`EXPO_PUBLIC_API_URL` + nagłówek `X-App-Key`); `src/lib/localFile.ts` sprowadza
   zdalny wynik do `file://` (upload/zapis/edycja łańcuchowa). AI działa TYLKO gdy `EXPO_PUBLIC_API_URL` wskazuje wdrożony
   backend; bez tego `AI_STUB` (echo obrazu). Dodano `expo-file-system`.

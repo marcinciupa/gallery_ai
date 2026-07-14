@@ -6,6 +6,8 @@
  * krótkim opóźnieniu (echo) — pełny przepływ UI działa bez backendu. Po postawieniu proxy wystarczy
  * ustawić env; realna ścieżka (multipart image+prompt → { uri }) jest już poniżej.
  */
+import { Platform } from 'react-native';
+import * as FileSystem from 'expo-file-system/legacy';
 import { ensureLocalFile, bakeOrientation } from './localFile';
 
 const BASE = (process.env.EXPO_PUBLIC_API_URL || '').replace(/\/+$/, '');
@@ -67,8 +69,7 @@ export async function eraseImage({ uri, mask }: { uri: string; mask?: string }):
     await sleep(1400);
     return { uri };
   }
-  const fields: Record<string, string> = {};
-  return postImage('/api/v1/image-erase', uri, fields, mask ? { mask } : undefined);
+  return postImage('/api/v1/image-erase', uri, {}, mask ? { mask } : undefined);
 }
 
 /**
@@ -115,37 +116,102 @@ export async function boostPrompt({ prompt }: { prompt: string }): Promise<Promp
   }
 }
 
-/** Wspólne wysłanie obrazu (+pola, +opcjonalna maska) do proxy; kontrakt: 200 { uri?; image_base64? }. */
-async function postImage(path: string, uri: string, fields: Record<string, string> = {}, extraImages?: Record<string, string>): Promise<ImageEditResult> {
-  // Android otwiera part FormData tylko dla file/content/asset — zdalny wynik (https/data) najpierw
-  // sprowadzamy do lokalnego pliku, inaczej łańcuchowa edycja wysyłałaby pusty obraz.
-  // Następnie WYPALAMY orientację EXIF w piksele — backend ignoruje EXIF, więc bez tego zwraca obrócony wynik.
+const TIMEOUT_MS = 90000; // generacja bywa wolna (~30 s) — hojny limit
+
+/** Odrzuca po `ms`, jeśli `p` nie zdąży (upload trwa dalej natywnie, ale UI dostaje czytelny TIMEOUT). */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new ApiError(0, 'TIMEOUT — generation took too long')), ms);
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
+}
+
+/** Wspólny parser odpowiedzi proxy (status + surowe body); kontrakt: 2xx { uri?; image_base64? }. */
+function parseResult(path: string, status: number, body: string): ImageEditResult {
+  if (status < 200 || status >= 300) {
+    // backend zwraca JSON { error }, ale bądźmy odporni na nie-JSON (np. HTML z proxy pośredniego)
+    let msg = `${path} failed (${status})`;
+    try { const j = JSON.parse(body); if (j?.error) msg = String(j.error); } catch {}
+    throw new ApiError(status, msg);
+  }
+  let json: { uri?: string; image_base64?: string };
+  try { json = JSON.parse(body); } catch { throw new ApiError(0, `${path}: malformed response`); }
+  if (json.uri) return { uri: json.uri };
+  if (json.image_base64) return { uri: `data:image/png;base64,${json.image_base64}` };
+  throw new ApiError(0, `${path}: empty response`);
+}
+
+/** Wspólne wysłanie obrazu (+pola, +opcjonalne dodatkowe obrazy np. maska) do proxy; kontrakt: 2xx { uri?; image_base64? }. */
+async function postImage(
+  path: string,
+  uri: string,
+  fields: Record<string, string> = {},
+  extraImages?: Record<string, string>,
+): Promise<ImageEditResult> {
+  // zdalny wynik (https/data) najpierw sprowadzamy do lokalnego pliku (inaczej łańcuchowa edycja wysyłałaby
+  // pusty obraz), a potem WYPALAMY orientację EXIF w piksele — backend ignoruje EXIF, więc bez tego zwraca
+  // obrócony/odwrócony wynik (np. remove-background).
   const localUri = await bakeOrientation(await ensureLocalFile(uri));
+  const url = `${BASE}${path}`;
+
+  // WEB: brak natywnego uploadAsync — użyj fetch+FormData (web to tylko podgląd UI, nie ścieżka produkcyjna AI).
+  if (Platform.OS === 'web') return postImageWeb(url, path, localUri, fields, extraImages);
+
+  // NATYWNIE: FileSystem.uploadAsync streamuje JEDEN plik multipart NATYWNIE (Android/iOS), z pominięciem
+  // globalnego fetch. KLUCZOWE: w Expo SDK 56 globalny `fetch` = winter-fetch, którego enkoder multipart
+  // NIE obsługuje FormData part typu { uri, name, type } — rzuca „Unsupported FormDataPart implementation".
+  // uploadAsync to omija i nie wymaga wczytywania obrazu do JS (bez base64 w pamięci).
+  //
+  // uploadAsync wysyła tylko JEDEN plik binarny → ewentualne dodatkowe obrazy (np. maska) dokładamy jako
+  // pola tekstowe base64 (`<klucz>_base64`), które backend odczyta z req.body. Prymarny obraz leci jako plik.
+  const parameters = { ...fields };
+  for (const [key, imgUri] of Object.entries(extraImages ?? {})) {
+    const localExtra = await ensureLocalFile(imgUri);
+    parameters[`${key}_base64`] = await FileSystem.readAsStringAsync(localExtra, { encoding: FileSystem.EncodingType.Base64 });
+  }
+
+  try {
+    const res = await withTimeout(
+      FileSystem.uploadAsync(url, localUri, {
+        httpMethod: 'POST',
+        uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+        fieldName: 'image',
+        mimeType: 'image/png',
+        parameters,
+        headers: { ...appKeyHeader },
+      }),
+      TIMEOUT_MS,
+    );
+    return parseResult(path, res.status, res.body);
+  } catch (e) {
+    if (e instanceof ApiError) throw e;
+    throw new ApiError(0, e instanceof Error ? e.message : 'network error');
+  }
+}
+
+/** Ścieżka web (podgląd UI): standardowy fetch+FormData — przeglądarkowy fetch obsługuje part { uri }. */
+async function postImageWeb(
+  url: string,
+  path: string,
+  localUri: string,
+  fields: Record<string, string>,
+  extraImages?: Record<string, string>,
+): Promise<ImageEditResult> {
   const form = new FormData();
   for (const [k, v] of Object.entries(fields)) form.append(k, v);
   form.append('image', { uri: localUri, name: 'image.png', type: 'image/png' } as any);
   for (const [k, v] of Object.entries(extraImages ?? {})) form.append(k, { uri: v, name: `${k}.png`, type: 'image/png' } as any);
-
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 90000); // generacja bywa wolna (~30 s) — hojny limit
   try {
-    const res = await fetch(`${BASE}${path}`, { method: 'POST', headers: { ...appKeyHeader }, body: form, signal: ctrl.signal });
-    if (!res.ok) {
-      // backend zwraca JSON { error }, ale bądźmy odporni na nie-JSON (np. HTML z proxy pośredniego)
-      let msg = `${path} failed (${res.status})`;
-      try { const j = await res.json(); if (j?.error) msg = String(j.error); } catch {}
-      throw new ApiError(res.status, msg);
-    }
-    const json: { uri?: string; image_base64?: string } = await res.json();
-    if (json.uri) return { uri: json.uri };
-    if (json.image_base64) return { uri: `data:image/png;base64,${json.image_base64}` };
-    throw new ApiError(0, `${path}: empty response`);
+    const res = await withTimeout(
+      fetch(url, { method: 'POST', headers: { ...appKeyHeader }, body: form }),
+      TIMEOUT_MS,
+    );
+    return parseResult(path, res.status, await res.text());
   } catch (e) {
     if (e instanceof ApiError) throw e;
-    // AbortController po timeoucie rzuca AbortError („Aborted") — pokaż to jako czytelny TIMEOUT
-    if (e instanceof Error && e.name === 'AbortError') throw new ApiError(0, 'TIMEOUT — generation took too long');
     throw new ApiError(0, e instanceof Error ? e.message : 'network error');
-  } finally {
-    clearTimeout(timeout);
   }
 }
