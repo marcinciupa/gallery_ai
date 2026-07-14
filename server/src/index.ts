@@ -36,6 +36,7 @@ const {
   DEAPI_MODEL = 'Flux_2_Klein_4B_BF16', // model edycji (img2img). Alternatywa: QwenImageEdit_Plus_NF4
   DEAPI_STEPS = '4', //                    Flux.2 Klein = distilled, 4 kroki wystarczą
   DEAPI_BG_MODEL = 'Ben2', //              dedykowany model usuwania tła (alternatywa: RMBG-1.4)
+  DEAPI_UPSCALE_MODEL = 'RealESRGAN_x4', // dedykowany model upscalu (x4)
   DEAPI_WEBHOOK_SECRET, //                 sekret HMAC do weryfikacji callbacków deAPI (min. 32 znaki)
   PUBLIC_URL, //                           publiczny URL proxy (do webhook_url). Domyślnie z RAILWAY_PUBLIC_DOMAIN
   RAILWAY_PUBLIC_DOMAIN,
@@ -133,7 +134,7 @@ app.use('/api', (req, res, next) => {
 });
 
 app.get('/health', (_req, res) =>
-  res.json({ ok: true, editModel: DEAPI_MODEL, bgModel: DEAPI_BG_MODEL, steps: EDIT_STEPS, webhooks: WEBHOOKS_ON }));
+  res.json({ ok: true, editModel: DEAPI_MODEL, bgModel: DEAPI_BG_MODEL, upscaleModel: DEAPI_UPSCALE_MODEL, steps: EDIT_STEPS, webhooks: WEBHOOKS_ON }));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // deAPI v2 — submit + oczekiwanie na wynik (webhook lub polling)
@@ -258,6 +259,16 @@ app.post('/api/v1/remove-background', upload.single('image'), async (req, res) =
     res.json({ uri: await runJob('background-removals', req.file.buffer, { model: DEAPI_BG_MODEL }) });
   } catch (e) {
     sendUpstreamError(res, e, 'remove-background');
+  }
+});
+
+// UPSCALE — powiększa/wyostrza obraz DEDYKOWANYM modelem deAPI v2 (RealESRGAN x4).
+app.post('/api/v1/upscale', upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'missing "image" file' });
+  try {
+    res.json({ uri: await runJob('upscales', req.file.buffer, { model: DEAPI_UPSCALE_MODEL }) });
+  } catch (e) {
+    sendUpstreamError(res, e, 'upscale');
   }
 });
 

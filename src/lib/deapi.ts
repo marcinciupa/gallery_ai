@@ -84,6 +84,18 @@ export async function removeBackground({ uri }: { uri: string }): Promise<ImageE
   return postImage('/api/v1/remove-background', uri);
 }
 
+/**
+ * Upscale — powiększa i wyostrza obraz dedykowanym modelem (deAPI: RealESRGAN x4). Jednoklik, bez promptu/maski.
+ * STUB: echo wejścia. Realnie: proxy → deAPI (RealESRGAN_x4).
+ */
+export async function upscaleImage({ uri }: { uri: string }): Promise<ImageEditResult> {
+  if (AI_STUB) {
+    await sleep(1400);
+    return { uri };
+  }
+  return postImage('/api/v1/upscale', uri);
+}
+
 export type PromptBoostResult = { prompt: string };
 
 /**

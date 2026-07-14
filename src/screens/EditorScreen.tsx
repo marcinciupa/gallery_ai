@@ -18,7 +18,7 @@ import { ScreenTopBar, AiStatusView } from './ScreenChrome';
 import { CropStage, CropHandle } from './CropStage';
 import { MagicEraseStage, MagicEraseHandle, MagicEraseState } from './MagicEraseStage';
 import { AiStage, AiStageHandle } from './AiStage';
-import { editImage, fillImage, boostPrompt } from '../lib/deapi';
+import { editImage, fillImage, boostPrompt, upscaleImage } from '../lib/deapi';
 import { saveImageToLibrary } from '../lib/saveImage';
 import { getProvenance, isAiSource, type Provenance, type SourceType } from '../lib/imageMeta';
 import { ensureLocalFile } from '../lib/localFile';
@@ -35,8 +35,9 @@ type EditView = 'viewer' | 'crop' | 'ai' | 'magicErase';
 //   • PASEK GŁÓWNY (zakładki trybu): AI EDIT / CROP & ROTATE
 //   • POD-PASEK (funkcje AI, tylko gdy AI EDIT): MAGIC ERASE / TEXT TO IMAGE / FILTERS
 const MAIN_TABS = ['AI EDIT', 'CROP & ROTATE'] as const;
-const AI_FUNCS = ['MAGIC ERASE', 'TEXT TO IMAGE', 'FILTERS'] as const;
-const AI_TEXT2IMG = 1; // indeks jedynej działającej funkcji (reszta = stub „SOON")
+const AI_FUNCS = ['MAGIC ERASE', 'TEXT TO IMAGE', 'UPSCALE', 'FILTERS'] as const;
+const AI_TEXT2IMG = 1; // TEXT TO IMAGE (prompt edit)
+const AI_UPSCALE = 2;  // UPSCALE (jednoklik, RealESRGAN x4). FILTERS (3) = wciąż stub „SOON".
 
 const PILL = { boxShadow: '0px 0px 4px 0px rgba(226,255,228,0.25)' } as const;
 
@@ -237,6 +238,7 @@ export function useImageEditor({
   const [typing, setTyping] = useState(false);
   const [draft, setDraft] = useState('');
   const [processing, setProcessing] = useState(false);
+  const [procLabel, setProcLabel] = useState('GENERATIVE FILL…'); // etykieta nakładki przetwarzania w viewerze (fill/upscale)
   const [boosting, setBoosting] = useState(false); // trwa ulepszanie promptu (prompt booster) przed edycją
   const [aiError, setAiError] = useState<string | null>(null);
   const inputRef = useRef<TextInput>(null);
@@ -287,10 +289,11 @@ export function useImageEditor({
   // TEXT TO IMAGE: ląduj w trybie maski (można malować zaznaczenie); klawiaturę promptu otwiera klawisz KEYBOARD.
   const enterAi = () => { setMainIdx(0); setMenuOpen(false); setView('ai'); };
   const enterMagicErase = () => { setMainIdx(0); setMenuOpen(false); setView('magicErase'); };
-  // pod-pasek funkcji AI: 0=MAGIC ERASE (stage), 1=TEXT TO IMAGE (prompt), 2=FILTERS (stub „SOON")
+  // pod-pasek funkcji AI: 0=MAGIC ERASE (stage), 1=TEXT TO IMAGE (prompt), 2=UPSCALE (jednoklik), 3=FILTERS (stub „SOON")
   const activateAiFunc = (i: number) => {
     if (i === 0) enterMagicErase();
     else if (i === AI_TEXT2IMG) enterAi();
+    else if (i === AI_UPSCALE) runUpscale();
     else showToast(`${AI_FUNCS[i]} — SOON`);
   };
   const chooseAiFunc = (i: number) => { setAiIdx(i); setMenuTier('sub'); activateAiFunc(i); };
@@ -325,19 +328,38 @@ export function useImageEditor({
   // FILL — wypełnij puste obszary (po obrocie) przez AI (deAPI: z-image / qwen-edit-plus)
   const fillAI = async () => {
     if (!workingUri || processing) return;
-    setProcessing(true); setAiError(null);
+    setProcLabel('GENERATIVE FILL…'); setProcessing(true); setAiError(null);
     try {
       const res = await fillImage({ uri: workingUri });
       // wynik (zdalny https / data:) sprowadzamy do lokalnego pliku — pod zapis i kolejne edycje
       if (res?.uri) { setWorkingUri(await ensureLocalFile(res.uri)); addAiTool('GEN FILL'); }
       setFillOffer(false);
     } catch (e) {
-      setAiError(e instanceof Error ? `ERROR: ${e.message}` : 'FILL FAILED');
+      // fill też działa w viewerze → błąd toastem (aiError renderuje się tylko w AiStage)
+      showToast(e instanceof Error ? `ERROR: ${e.message}` : 'FILL FAILED');
     } finally {
       setProcessing(false);
     }
   };
   const skipFill = () => setFillOffer(false);
+
+  // UPSCALE — jednoklik: powiększ/wyostrz aktualny obraz dedykowanym modelem (deAPI: RealESRGAN x4).
+  const runUpscale = async () => {
+    if (processing) return;
+    const uri = resolveUri(displaySource); // aktualny obraz (workingUri jeśli edytowany, inaczej źródło)
+    if (!uri) { showToast('NO IMAGE SOURCE'); return; }
+    setMenuOpen(false); setView('viewer'); setAiError(null);
+    setProcLabel('UPSCALING…'); setProcessing(true);
+    try {
+      const res = await upscaleImage({ uri });
+      if (res?.uri) { setWorkingUri(await ensureLocalFile(res.uri)); addAiTool('UPSCALE'); setAiUpscale(4); }
+    } catch (e) {
+      // upscale działa w viewerze (nie w AiStage), więc błąd pokazujemy toastem — inaczej byłby niewidoczny
+      showToast(e instanceof Error ? `ERROR: ${e.message}` : 'UPSCALE FAILED');
+    } finally {
+      setProcessing(false);
+    }
+  };
 
   // AI EDIT — sterowanie klawiaturą/promptem
   const resolveUri = (src?: ImageSourcePropType) => { try { return RNImage.resolveAssetSource(src as any)?.uri ?? ''; } catch { return ''; } };
@@ -398,7 +420,7 @@ export function useImageEditor({
     : magic.processing
       ? { lines: ['MAGIC ERASE', magic.removeBg ? 'REMOVING BG…' : 'ERASING…'], pulse: true }
       : processing
-      ? { lines: ['AI IMAGE EDIT', view === 'ai' ? 'PROCESSING…' : 'GENERATIVE FILL…'], pulse: true }
+      ? { lines: ['AI IMAGE EDIT', view === 'ai' ? 'PROCESSING…' : procLabel], pulse: true }
       : view === 'ai'
         // gdy booster aktywny → pasek zapowiada PROMPT BOOSTER WITH DEAPI (dwie linie obok ikony AI)
         ? { lines: promptBooster ? ['PROMPT BOOSTER', 'WITH DEAPI'] : ['AI IMAGE EDIT', 'WITH DEAPI'], pulse: false }
@@ -523,7 +545,7 @@ export function useImageEditor({
     };
   } else {
     if (processing) {
-      // trwa wypełnianie AI (fill) — klawisze wygaszone
+      // trwa przetwarzanie AI (fill/upscale) — klawisze i joystick wygaszone (blokuje też nawigację prev/next)
       keyboard = { screen: [{ label: '' }, { label: '' }], metal: metalBlank, joystick: { highlighted: false } };
     } else if (fillOffer) {
       // po kadrze z obrotem: propozycja wypełnienia pustych obszarów AI
@@ -561,7 +583,7 @@ export function useImageEditor({
         {/* content_area: obraz/pod-widok (zajmuje resztę wysokości), a pod nim — dolne menu EDIT */}
         <View style={{ flex: 1, alignSelf: 'stretch' }}>
           {view === 'viewer' ? (
-            displaySource ? <ZoomImage key={workingUri ?? String((source as any)?.uri ?? source)} source={displaySource} onPrev={onPrev} onNext={onNext} onSwipeUp={() => setInfoOpen(true)} onSwipeDown={() => setInfoOpen(false)} onDims={(w, h) => setDims({ w, h })} /> : null
+            displaySource ? <ZoomImage key={workingUri ?? String((source as any)?.uri ?? source)} source={displaySource} onPrev={processing ? undefined : onPrev} onNext={processing ? undefined : onNext} onSwipeUp={() => setInfoOpen(true)} onSwipeDown={() => setInfoOpen(false)} onDims={(w, h) => setDims({ w, h })} /> : null
           ) : view === 'crop' ? (
             displaySource ? <CropStage ref={cropRef} source={displaySource} onDirty={setCropDirty} /> : null
           ) : view === 'magicErase' ? (
@@ -625,7 +647,7 @@ export function useImageEditor({
         {(view === 'viewer' && processing) || (view === 'magicErase' && magic.processing) ? (
           <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(26,26,26,0.55)' }}>
             <Text style={{ fontFamily: font.monoLabel.family, fontSize: 14, letterSpacing: 2, color: screen.olive.primary, ...phosphorGlow }}>
-              {view === 'magicErase' ? (magic.removeBg ? 'REMOVING BACKGROUND…' : 'ERASING…') : 'GENERATIVE FILL…'}
+              {view === 'magicErase' ? (magic.removeBg ? 'REMOVING BACKGROUND…' : 'ERASING…') : procLabel}
             </Text>
           </View>
         ) : null}

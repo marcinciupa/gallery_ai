@@ -20,6 +20,7 @@ czasu wyniku, więc kontrakt HTTP apki się nie zmienia (bez przebudowy AAB przy
 | `POST` | `/api/v1/image-edits` | multipart `image`, `prompt` (**EN**) | `{ uri }` |
 | `POST` | `/api/v1/image-fills` | multipart `image` | `{ uri }` |
 | `POST` | `/api/v1/remove-background` | multipart `image` | `{ uri }` (dedykowany model, np. Ben2) |
+| `POST` | `/api/v1/upscale` | multipart `image` | `{ uri }` (dedykowany model, np. RealESRGAN_x4) |
 | `POST` | `/api/v1/image-erase` | multipart `image` | `{ uri }` |
 | `POST` | `/api/v1/prompt-boost` | json `{ prompt }` | `{ prompt }` (passthrough) |
 | `POST` | `/webhooks/deapi` | raw JSON od deAPI | `{ ok }` (autoryzacja podpisem HMAC, **nie** X-App-Key) |
@@ -56,6 +57,7 @@ curl -X POST http://localhost:8787/api/v1/remove-background \
 | `DEAPI_MODEL` | `Flux_2_Klein_4B_BF16` | model edycji img2img (alt.: `QwenImageEdit_Plus_NF4`) |
 | `DEAPI_STEPS` | `4` | kroki edycji (Flux.2 Klein = distilled) |
 | `DEAPI_BG_MODEL` | `Ben2` | dedykowany model usuwania tła (alt.: `RMBG-1.4`) |
+| `DEAPI_UPSCALE_MODEL` | `RealESRGAN_x4` | dedykowany model upscalu (x4) |
 | `DEAPI_WEBHOOK_SECRET` | — | sekret HMAC do weryfikacji webhooków (min. 32 zn.). Bez niego → polling. |
 | `PUBLIC_URL` | z `RAILWAY_PUBLIC_DOMAIN` | publiczny URL proxy do `webhook_url`. Na Railway wykrywany automatycznie. |
 | `APP_KEY` | — | współdzielony sekret apka↔proxy |

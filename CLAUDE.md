@@ -40,9 +40,11 @@ Realny skeuomorfizm (tekstura, haptyka, tilt) tylko natywnie (Expo Go / dev buil
 
 ## AI + backend + publikacja — ZBUDOWANE (backend przepisany na v2 REST, 2026-07-14)
 - **`server/`** — cienki backend-proxy (Node/Express) do **deAPI natywny REST v2** (`https://api.deapi.ai`).
-  Endpointy: `POST /api/v1/{image-edits, image-fills, remove-background, image-erase}` + `prompt-boost` (passthrough)
-  + `POST /webhooks/deapi` (odbiornik callbacków). Modele: edycja `Flux_2_Klein_4B_BF16` (img2img, wymaga `seed`),
-  usuwanie tła **dedykowany `Ben2`** (alt. `RMBG-1.4`). deAPI v2 jest ASYNC: submit→`request_id`→wynik przez
+  Endpointy: `POST /api/v1/{image-edits, image-fills, remove-background, upscale, image-erase}` + `prompt-boost`
+  (passthrough) + `POST /webhooks/deapi` (odbiornik callbacków). Modele: edycja `Flux_2_Klein_4B_BF16` (img2img,
+  wymaga `seed`), usuwanie tła **dedykowany `Ben2`** (alt. `RMBG-1.4`), upscale **dedykowany `RealESRGAN_x4`**.
+  UI apki (EditorScreen): AI_FUNCS = MAGIC ERASE (remove-bg/erase), TEXT TO IMAGE (edit), UPSCALE, FILTERS
+  (wciąż stub „SOON"). deAPI v2 jest ASYNC: submit→`request_id`→wynik przez
   **webhook (HMAC) z fallbackiem na polling** `GET /api/v2/jobs/{id}`; proxy trzyma połączenie apki synchronicznie.
 - **⚠️ KLUCZ deAPI — dwa realmy auth (łatwo się pomylić)**: format `<id>|<token>` (np. `13660|…`). OpenAI-compat
   (`oai.deapi.ai/v1`, stary backend) WYMAGAŁ prefiksu `dpn-sk-`; **REST v2 (`api.deapi.ai`) prefiksu NIE przyjmuje**
