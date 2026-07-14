@@ -55,6 +55,32 @@ export async function fillImage({ uri }: { uri: string }): Promise<ImageEditResu
   return postImage('/api/v1/image-fills', uri);
 }
 
+/**
+ * Magic Erase — usuwa zaznaczony (namalowany palcem) obszar i domalowuje tło (inpaint).
+ * `uri` = obraz, `mask` = URI maski (biała = do usunięcia) — na razie opcjonalny (STUB nie potrzebuje maski).
+ * STUB: echo wejścia. Realnie: proxy → deAPI (inpaint z maską).
+ */
+export async function eraseImage({ uri, mask }: { uri: string; mask?: string }): Promise<ImageEditResult> {
+  if (AI_STUB) {
+    await sleep(1400);
+    return { uri };
+  }
+  const fields: Record<string, string> = {};
+  return postImage('/api/v1/image-erase', uri, fields, mask ? { mask } : undefined);
+}
+
+/**
+ * Remove Background — usuwa tło, zostawia pierwszy plan (jednoklik, bez maski).
+ * STUB: echo wejścia. Realnie: proxy → deAPI (segmentacja/rembg).
+ */
+export async function removeBackground({ uri }: { uri: string }): Promise<ImageEditResult> {
+  if (AI_STUB) {
+    await sleep(1400);
+    return { uri };
+  }
+  return postImage('/api/v1/remove-background', uri);
+}
+
 export type PromptBoostResult = { prompt: string };
 
 /**
@@ -87,11 +113,12 @@ export async function boostPrompt({ prompt }: { prompt: string }): Promise<Promp
   }
 }
 
-/** Wspólne wysłanie obrazu (+pola) do proxy; kontrakt odpowiedzi: 200 { uri?; image_base64? }. */
-async function postImage(path: string, uri: string, fields: Record<string, string> = {}): Promise<ImageEditResult> {
+/** Wspólne wysłanie obrazu (+pola, +opcjonalna maska) do proxy; kontrakt: 200 { uri?; image_base64? }. */
+async function postImage(path: string, uri: string, fields: Record<string, string> = {}, extraImages?: Record<string, string>): Promise<ImageEditResult> {
   const form = new FormData();
   for (const [k, v] of Object.entries(fields)) form.append(k, v);
   form.append('image', { uri, name: 'image.png', type: 'image/png' } as any);
+  for (const [k, v] of Object.entries(extraImages ?? {})) form.append(k, { uri: v, name: `${k}.png`, type: 'image/png' } as any);
 
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 60000); // generacja bywa wolna — hojny limit

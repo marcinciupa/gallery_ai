@@ -4,10 +4,13 @@
  * Web: pobranie pliku (anchor download) — biblioteka mediów nie działa w przeglądarce.
  */
 import { Platform } from 'react-native';
+import { addAiTag } from './aiTags';
 
 export type SaveResult = 'ok' | 'denied' | 'error';
 
-export async function saveImageToLibrary(uri: string): Promise<SaveResult> {
+// `ai` = zapisywany obraz powstał z ingerencją AI → oznacz nowy asset lokalnie (etykieta „AI" na miniaturze).
+// STANDARD: docelowo zamiast lokalnego znacznika osadzać IPTC digitalSourceType / C2PA (wymaga native).
+export async function saveImageToLibrary(uri: string, opts?: { ai?: boolean }): Promise<SaveResult> {
   if (!uri) return 'error';
   if (Platform.OS === 'web') {
     try {
@@ -26,7 +29,8 @@ export async function saveImageToLibrary(uri: string): Promise<SaveResult> {
     const ML: any = await import('expo-media-library');
     const perm = await ML.requestPermissionsAsync();
     if (!perm.granted) return 'denied';
-    await ML.Asset.create(uri); // dodaje plik do biblioteki (nowe klasowe API)
+    const asset = await ML.Asset.create(uri); // dodaje plik do biblioteki (nowe klasowe API)
+    if (opts?.ai && asset?.id) { try { await addAiTag(asset.id); } catch { /* tag best-effort */ } }
     return 'ok';
   } catch {
     return 'error';

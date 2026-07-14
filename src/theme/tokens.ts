@@ -249,7 +249,9 @@ export const dims = {
   key: { size: 64, padding: 8, radius: 4 },
   keyInner: { size: 48, offset: 8, radius: 24 },
   // JOYSTICK (nowy, node 350:4682): metalowy kwadrat 64 → wklęsła studnia 56 (offset 4) → wypukły grzybek 24.
-  joystick: { size: 64, well: 56, wellOffset: 4, wellRadius: 28, nub: 24, nubTravel: 10, dirThreshold: 12 },
+  // dirThreshold MUSI być ≤ nubTravel — inaczej delikatny ruch dochodzi do wizualnego maksa grzybka (10),
+  // ale nie przekracza progu odpalenia → „nic się nie dzieje, trzeba swipe'nąć drugi raz" (rzadki bug nawigacji).
+  joystick: { size: 64, well: 56, wellOffset: 4, wellRadius: 28, nub: 24, nubTravel: 10, dirThreshold: 9 },
   smallButton: { width: 32, height: 20, radius: 4, padding: 4 },
   knob: { width: 64, height: 20, radius: 4 },
 } as const;

@@ -37,6 +37,7 @@ const DEFAULT_ASPECT = 2; // '1:1'
 const MAX_ANGLE = 180;    // pełny zakres obrotu (−180°…180° = całe 360°)
 const HANDLE_HIT = 56;    // promień strefy chwytania narożnika (px) — wygodne łapanie „L"
 const MAX_ZOOM = 1.2;     // maksymalny zoom obrazu (120%) — gest dwoma palcami
+const ZOOM_MARGIN = 0.8;  // dolny zoom: baza = dłuższy bok mieści się w szerokości pola, plus jeszcze −20% zapasu
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 
 // bounding-box obrazu W×H po obrocie o `deg` (identyczne jak sizeFromAngle w bibliotece)
@@ -250,7 +251,7 @@ export type CropHandle = {
   apply: () => Promise<{ uri: string; needsFill: boolean } | null>;
 };
 
-export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>(function CropStage({ source }, ref) {
+export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType; onDirty?: (dirty: boolean) => void }>(function CropStage({ source, onDirty }, ref) {
   const initDims = useMemo(() => {
     try { const a = RNImage.resolveAssetSource(source as any); return { W: a?.width || 1, H: a?.height || 1 }; } catch { return { W: 1, H: 1 }; }
   }, [source]);
@@ -280,12 +281,21 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
   const angleRef = useRef(0); angleRef.current = angle;
   const [focus, setFocus] = useState<'ratio' | 'rotation'>('ratio');
   const [win, setWin] = useState<Rect>({ x: 0, y: 0, w: 0, h: 0 }); // okno kadru w układzie pola
-  const [zoom, setZoom] = useState(1); // zoom obrazu (1…MAX_ZOOM) — gest dwoma palcami
+  const [zoom, setZoom] = useState(1); // zoom obrazu (minZoom…MAX_ZOOM) — gest dwoma palcami
   const zoomRef = useRef(1); zoomRef.current = zoom;
+  // „dirty" = użytkownik cokolwiek zmienił (obrót/proporcje/kadr/zoom) → klawiatura pokazuje SAVE/RESET
+  const [dirty, setDirty] = useState(false);
+  const markDirty = () => setDirty(true);
+  useEffect(() => { onDirty?.(dirty); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [dirty]);
+  const minZoomRef = useRef(1);
 
   const W = norm ? norm.W : dims.W, H = norm ? norm.H : dims.H; // wymiary znormalizowanego obrazu
   const ratio = ASPECTS[aspectIdx].key === 'ORIGINAL' ? W / H : ASPECTS[aspectIdx].ratio; // null = CUSTOM
   const d0 = areaW > 0 && areaH > 0 ? Math.min(areaW / W, areaH / H) : 0; // skala „contain" (całe zdjęcie widoczne, θ=0)
+  // najmniejszy zoom: dłuższy bok obrazu mieści się w SZEROKOŚCI pola (areaW / max(W,H)), i jeszcze −20% (ZOOM_MARGIN).
+  // wyrażone względem d0 (contain) → wartość ≤1 (przy szerokim polu ograniczamy do 1, żeby zoom-out nie stał się zoom-in).
+  const minZoom = d0 > 0 && areaW > 0 ? Math.min(1, ((areaW / Math.max(W, H)) * ZOOM_MARGIN) / d0) : 1;
+  minZoomRef.current = minZoom;
   const imageRect: Rect = useMemo(
     () => ({ x: (areaW - W * d0) / 2, y: (areaH - H * d0) / 2, w: W * d0, h: H * d0 }),
     [areaW, areaH, W, H, d0],
@@ -332,10 +342,11 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
           const ang = (Math.atan2(dy, dx) * 180) / Math.PI;
           if (!pinchRef.current) { pinchRef.current = { dist, ang, z0: zoomRef.current, a0: angleRef.current }; return; }
           const p = pinchRef.current;
-          const z = clamp(p.z0 * (dist / p.dist), 1, MAX_ZOOM);
+          const z = clamp(p.z0 * (dist / p.dist), minZoomRef.current, MAX_ZOOM);
           zoomRef.current = z; setZoom(z);
           const na = clamp(p.a0 + (ang - p.ang), -MAX_ANGLE, MAX_ANGLE);
           angleRef.current = na; setAngle(na);
+          markDirty();
           return;
         }
         // JEDEN PALEC → kadr (narożnik = rozmiar, środek = przesunięcie). Po dwupalcowym geście — nic.
@@ -355,13 +366,14 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
         }
         winRef.current = next;
         setWin(next);
+        markDirty();
       },
       onPanResponderRelease: () => { modeRef.current = null; pinchRef.current = null; didPinchRef.current = false; },
       onPanResponderTerminate: () => { modeRef.current = null; pinchRef.current = null; didPinchRef.current = false; },
     }),
   ).current;
 
-  const setAngleClamped = (deg: number) => { const a = clamp(deg, -MAX_ANGLE, MAX_ANGLE); angleRef.current = a; setAngle(a); };
+  const setAngleClamped = (deg: number) => { const a = clamp(deg, -MAX_ANGLE, MAX_ANGLE); angleRef.current = a; setAngle(a); markDirty(); };
   const focusRef = useRef<'ratio' | 'rotation'>('ratio'); focusRef.current = focus;
 
   useImperativeHandle(ref, () => ({
@@ -369,14 +381,15 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
     focusRatio: () => setFocus('ratio'),
     adjust: (dir: -1 | 1) => {
       if (focusRef.current === 'rotation') setAngleClamped(angleRef.current + dir);
-      else setAspectIdx((i) => (i + dir + ASPECTS.length) % ASPECTS.length);
+      else { setAspectIdx((i) => (i + dir + ASPECTS.length) % ASPECTS.length); markDirty(); }
     },
     rotateBy: (delta: number) => { setFocus('rotation'); setAngleClamped(angleRef.current + delta); },
-    reset: () => { setAspectIdx(DEFAULT_ASPECT); setAngleClamped(0); setZoom(1); zoomRef.current = 1; setWin(defaultWindow(1, rectRef.current)); },
+    reset: () => { setAspectIdx(DEFAULT_ASPECT); setAngleClamped(0); setZoom(1); zoomRef.current = 1; setWin(defaultWindow(1, rectRef.current)); setDirty(false); },
     apply: async () => {
       if (!uri || areaW <= 0 || areaH <= 0 || d0 <= 0) return null;
-      // efektywna skala px→ekran = contain × zoom × wypełnienie-szerokości-przy-obrocie (spójne z transformem)
-      const fillW = rotationFillScale(W * d0, H * d0, angleRef.current);
+      // efektywna skala px→ekran = contain × zoom × wypełnienie-szerokości-przy-obrocie (spójne z transformem).
+      // Przy zoom-out (zoom<1) fillW=1 — tak samo jak na podglądzie, inaczej zapisany kadr rozjechałby się z widokiem.
+      const fillW = zoomRef.current < 1 ? 1 : rotationFillScale(W * d0, H * d0, angleRef.current);
       const d = d0 * zoomRef.current * fillW;
       const { Wr, Hr } = rotatedBox(W, H, angleRef.current);
       const canvasLeft = areaW / 2 - (Wr * d) / 2, canvasTop = areaH / 2 - (Hr * d) / 2;
@@ -405,7 +418,10 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
   }), [uri, areaW, areaH, d0, W, H]);
 
   const imgW = W * d0, imgH = H * d0;
-  const fillW = rotationFillScale(imgW, imgH, angle); // przy obrocie dobij skalę, by obraz nie zwężał się poniżej 0°
+  // fillW dobija skalę przy obrocie, by obraz nie zwężał się poniżej 0° (brak pustych pasów przy prostowaniu).
+  // Przy ZOOM-OUT (zoom<1) użytkownik świadomie pomniejsza, by zobaczyć całość — wtedy fillW=1, żeby nie „odrastał".
+  const fillW = zoom < 1 ? 1 : rotationFillScale(imgW, imgH, angle);
+  const imgScale = zoom * fillW; // efektywna skala px→ekran (spójna z apply)
   const dim = { position: 'absolute' as const, backgroundColor: 'rgba(26,26,26,0.6)' };
   const stroke = 'rgba(226,255,228,0.25)';
 
@@ -431,7 +447,7 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
                 left: areaW / 2, top: areaH / 2,
                 width: imgW, height: imgH,
                 marginLeft: -imgW / 2, marginTop: -imgH / 2,
-                transform: [{ scale: zoom * fillW }, { rotate: `${angle}deg` }],
+                transform: [{ scale: imgScale }, { rotate: `${angle}deg` }],
               }}
             >
               {/* expo-image (nie RNImage): trzyma poprzednią klatkę przy zmianie źródła i korzysta z cache
@@ -468,7 +484,7 @@ export const CropStage = forwardRef<CropHandle, { source: ImageSourcePropType }>
           onActivate={() => setFocus('rotation')}
           onAngle={(a) => setAngleClamped(a)}
         />
-        <AspectBar index={aspectIdx} active={focus === 'ratio'} onPick={(i) => { setFocus('ratio'); setAspectIdx(i); }} />
+        <AspectBar index={aspectIdx} active={focus === 'ratio'} onPick={(i) => { setFocus('ratio'); setAspectIdx(i); markDirty(); }} />
       </View>
     </View>
   );

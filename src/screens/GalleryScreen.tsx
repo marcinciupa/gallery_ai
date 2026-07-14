@@ -20,6 +20,7 @@ import { FeedGrid } from '../components/FeedGrid';
 import { useImageEditor } from './EditorScreen';
 import { MOCK_FOLDERS, type Folder } from './mockFolders';
 import { Diag, DIAG_ALL } from '../lib/diag';
+import { getProvenance, isAiSource } from '../lib/imageMeta';
 
 // MOCK_FOLDERS re-eksportowane dla App (natywnie puste, na web z `mockFolders.web.ts`)
 export { MOCK_FOLDERS };
@@ -41,7 +42,42 @@ export const EMPTY_FOLDERS: Folder[] = [];
 // Kafel = ZWYKŁY obraz (bez isolation/mixBlendMode/boxShadow per-kafel). Filtr trybu (monochrom/fosfor)
 // nakładany JEDEN raz nad całą siatką (patrz ScreenFilter) — kilkadziesiąt offscreenów per-kafel było
 // przyczyną migotliwego janku na granicy GPU. `selected` = obrys.
-function PhosphorCover({ source, size, selected, images = true }: { source?: ImageSourcePropType; size: number; selected?: boolean; images?: boolean }) {
+/**
+ * Etykiety miniatury (Figma 426:7196): „AI" (ingerencja AI) i „RAW" (format) w prawym-górnym rogu.
+ * Fosforowy tekst z ciemną obwódką (textShadow) → czytelny nad jasnymi zdjęciami. Tylko gdy dana flaga zachodzi.
+ */
+function ThumbBadges({ ai, raw }: { ai?: boolean; raw?: boolean }) {
+  if (!ai && !raw) return null;
+  const badge = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: screen.olive.primary, textShadowColor: color.dark21, textShadowRadius: 2, textShadowOffset: { width: 0, height: 0 } } as const;
+  return (
+    <View pointerEvents="none" style={{ position: 'absolute', top: 6, right: 8, flexDirection: 'row', gap: 6 }}>
+      {ai ? <Text style={badge}>AI</Text> : null}
+      {raw ? <Text style={badge}>RAW</Text> : null}
+    </View>
+  );
+}
+
+/**
+ * usePhotoAi — czy zdjęcie ma ingerencję AI. Najpierw lokalny tag (sync), a jeśli nie — LENIWY, cache'owany
+ * odczyt prowieniencji z metadanych (IPTC digitalSourceType / C2PA). Błędy ciche → zostaje sam tag.
+ */
+function usePhotoAi(source?: ImageSourcePropType): boolean {
+  const tag = !!(source as any)?.ai;
+  const id = (source as any)?.uri as string | undefined;
+  const [meta, setMeta] = useState(false);
+  useEffect(() => {
+    setMeta(false);
+    if (tag || !id || typeof id !== 'string') return;
+    let alive = true;
+    getProvenance(id).then((pv) => { if (alive && isAiSource(pv.sourceType)) setMeta(true); }).catch(() => {});
+    return () => { alive = false; };
+  }, [id, tag]);
+  return tag || meta;
+}
+
+function PhosphorCover({ source, size, selected, images = true, ai: aiProp }: { source?: ImageSourcePropType; size: number; selected?: boolean; images?: boolean; ai?: boolean }) {
+  const raw = !!(source as any)?.raw; // flaga RAW doklejona do źródła (useMedia)
+  const ai = aiProp ?? !!(source as any)?.ai;
   // Zaznaczenie = PODWÓJNY obrys (fig 337:6150 strokes=[#E2FFE4,#1A1A1A]) — OBIE ramki WEWNĘTRZNE (inset na tej
   // samej krawędzi, nakładają się na zdjęcie): czarna 3px pod spodem, fosforowa 2px na wierzchu ją przykrywa →
   // widać fosfor 2px (na ciemnym tle) + wewn. 1px czarnej (kontrast przy JASNYCH zdjęciach; sam jasny obrys ginął).
@@ -61,6 +97,7 @@ function PhosphorCover({ source, size, selected, images = true }: { source?: Ima
           <View pointerEvents="none" style={{ ...overlay, borderWidth: 2, borderColor: screen.olive.primary }} />
         </>
       ) : null}
+      {images && source ? <ThumbBadges ai={ai} raw={raw} /> : null}
     </View>
   );
 }
@@ -102,9 +139,10 @@ const FolderTile = memo(function FolderTile({ folder, size, selected, images, on
 });
 
 const PhotoTile = memo(function PhotoTile({ source, size, selected, images, onPress }: { source: ImageSourcePropType; size: number; selected?: boolean; images?: boolean; onPress?: () => void }) {
+  const ai = usePhotoAi(source); // tag lokalny lub metadane (IPTC/C2PA)
   return (
     <Pressable onPress={onPress} style={{ width: '100%' }}>
-      <PhosphorCover source={source} size={size} selected={selected} images={images} />
+      <PhosphorCover source={source} size={size} selected={selected} images={images} ai={ai} />
     </Pressable>
   );
 });
@@ -144,7 +182,9 @@ const FOLDER_GAP = 8; // odstęp między kolumnami w siatce folderów (ROOT)
 const PHOTO_GAP = 8; //  odstęp między kolumnami w siatce zdjęć (spójny z feedem — FEED_GAP)
 
 export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings, media, allFolders = EMPTY_FOLDERS, included = [], excluded = [], displayMode = 'IMMERSIVE', diag = DIAG_ALL, leftHanded = false, promptBooster = false }: { mode?: Mode; onCycleMode?: () => void; onOpenSettings?: () => void; media?: ReturnType<typeof useMedia>; allFolders?: Folder[]; included?: string[]; excluded?: string[]; displayMode?: DisplayMode; diag?: Diag; leftHanded?: boolean; promptBooster?: boolean } = {}) {
-  const [cols, setCols] = useState<2 | 3>(2); // VIEW: 2 (medium) ↔ 3 (small)
+  // rozmiar miniatur (2=medium ↔ 3=small) — NIEZALEŻNY dla gallery view i feed view
+  const [galleryCols, setGalleryCols] = useState<2 | 3>(2);
+  const [feedCols, setFeedCols] = useState<2 | 3>(2);
   const [selected, setSelected] = useState(0);
   const [openFolder, setOpenFolder] = useState<number | null>(null); // null = ROOT (foldery); index = wnętrze
   const [viewerOpen, setViewerOpen] = useState(false); // pełnoekranowy podgląd zdjęcia (pokazuje photos[selected])
@@ -155,6 +195,10 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const [feedSpans, setFeedSpans] = useState<Record<number, number>>({}); // rozmiar kafla feeda: index → 1..cols
   const [contentW, setContentW] = useState(0);
   const [photos, setPhotos] = useState<ImageSourcePropType[]>([]); // zdjęcia otwartego folderu (mock lub media)
+
+  // aktywny rozmiar miniatur zależy od widoku; zmiana (THUMB SIZE / pinch) dotyka TYLKO aktywnego widoku
+  const cols = feedMode ? feedCols : galleryCols;
+  const setColsActive = (fn: (c: 2 | 3) => 2 | 3) => (feedMode ? setFeedCols(fn) : setGalleryCols(fn));
 
   // widoczne foldery = whitelist (jeśli niepusta) − blacklist. Reszta ekranu (siatka/feed/nawigacja) używa TYCH.
   // Źródło (`allFolders`) i `media` podaje App (jedno useMedia — współdzielone z Settings).
@@ -222,10 +266,10 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   }, [selected, openFolder]);
 
   const move = (d: number) => setSelected((i) => Math.max(0, Math.min(n - 1, i + d)));
-  const toggleView = () => setCols((c) => (c === 2 ? 3 : 2));
+  const toggleView = () => setColsActive((c) => (c === 2 ? 3 : 2));
   // pinch na ekranie: rozsunięcie ('out') → mniej kolumn (większe kafle), zsunięcie ('in') → więcej
   const pinchColumns = (dir: 'in' | 'out') =>
-    setCols((c) => Math.max(2, Math.min(3, dir === 'out' ? c - 1 : c + 1)) as 2 | 3);
+    setColsActive((c) => Math.max(2, Math.min(3, dir === 'out' ? c - 1 : c + 1)) as 2 | 3);
   // press: FEED → podgląd; ROOT → wejdź w folder; folder → podgląd zaznaczonego zdjęcia
   const enter = () => {
     if (feedMode) { if (n > 0) setViewerOpen(true); return; }
@@ -253,13 +297,16 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     onExit: closeViewer,
     onPrev: () => move(-1),
     onNext: () => move(1),
+    onOpenSettings,
+    onMenu: () => toggleMenu(), // klawisz MENU w podglądzie → kontekstowe menu galerii
     leftHanded,
     promptBooster,
   });
 
   // MENU
   const toggleMenu = () => setMenuOpen((o) => { if (!o) setMenuIndex(0); return !o; });
-  const menuMove = (d: number) => setMenuIndex((i) => Math.max(0, Math.min(MENU_ITEMS.length - 1, i + d)));
+  // nawigacja zapętlona (loop): z końca wracamy na początek i odwrotnie
+  const menuMove = (d: number) => setMenuIndex((i) => (i + d + MENU_ITEMS.length) % MENU_ITEMS.length);
   const pickMenu = (i: number) => {
     setMenuOpen(false);
     if (MENU_ITEMS[i] === 'SETTINGS') { onOpenSettings?.(); return; }
@@ -280,19 +327,20 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const imgSize = itemWidth > 0 ? itemWidth - gap : 0;
   const rowHeight = imgSize + gap + (inside ? 0 : 34); // +podpis dla folderów (getItemLayout → pewny scrollToIndex)
 
-  // Klawiatura: 1 = BACK (tylko gdy jest dokąd cofać: folder/feed; w domyślnym ROOT pusty), 2 = FEED VIEW
-  // (w folderach) ⇄ GALLERY VIEW (w feedzie), 4 = THUMB SIZE (cykl gęstości 2/3 kol.), 5 = MENU (otwarte =
-  // CLOSE MENU, zielony). Gęstość też pinch na ekranie.
-  const canBack = inside || feedMode; // w ROOT nie ma dokąd cofać → brak BACK
+  // Klawiatura (kolejność): THUMB SIZE · FEED VIEW · joystick · MENU · BACK.
+  // 1 = THUMB SIZE (cykl gęstości 2/3 kol.), 2 = FEED VIEW (w folderach) ⇄ GALLERY VIEW (w feedzie),
+  // 4 = MENU (otwarte = CLOSE MENU, zielony), 5 = BACK — TYLKO wewnątrz folderu. FEED VIEW jest trybem
+  // RÓWNOLEGŁYM do GALLERY VIEW (przełączany klawiszem FEED/GALLERY), więc tam BACK się NIE pojawia.
+  // Bez BACK klawisz zostaje WIDOCZNY (puste szkło), tylko bez labela i funkcji. Gęstość też pinch.
+  const canBack = inside;
   const keyboard: KeyboardConfig = {
     screen: [
+      { label: 'THUMB\nSIZE', onPress: toggleView },
       canBack ? { label: 'BACK', onPress: () => { goBack(); } } : { label: '' },
-      { label: menuOpen ? 'CLOSE\nMENU' : 'MENU', variant: menuOpen ? 'primary' : 'default', onPress: toggleMenu },
     ],
-    // 2 = FEED/GALLERY VIEW; 4 = THUMB SIZE (dwie linie w głównym labelu, nie support) → zmiana rozmiaru miniatur.
     metal: [
       { type: 'label', upper: feedMode ? 'GALLERY\nVIEW' : 'FEED\nVIEW', onPress: toggleFeed },
-      { type: 'label', upper: 'THUMB\nSIZE', onPress: toggleView },
+      { type: 'label', upper: menuOpen ? 'CLOSE\nMENU' : 'MENU', variant: menuOpen ? 'primary' : undefined, onPress: toggleMenu },
     ],
     joystick: {
       highlighted: true,
@@ -393,16 +441,13 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
         </View>
       ) : null}
 
-      {/* TOAST trybu wyświetlania — fosforowa pigułka `< TRYB >` przy dolnej krawędzi, wyśrodkowana.
+      {/* TOAST trybu wyświetlania — fosforowa pigułka z nazwą trybu przy dolnej krawędzi, wyśrodkowana.
           Pojawia się przy swipie i znika 2 s po ostatnim (§ toast, node 360:5309). */}
       {toastVisible ? (
         <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, bottom: 8, alignItems: 'center' }}>
           <View
             style={
               {
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 10,
                 paddingHorizontal: 8,
                 paddingVertical: 2,
                 borderRadius: 2,
@@ -411,9 +456,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
               } as any
             }
           >
-            <Text style={pill}>{'<'}</Text>
             <Text style={pill}>{displayMode}</Text>
-            <Text style={pill}>{'>'}</Text>
           </View>
         </View>
       ) : null}
@@ -427,8 +470,12 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
 
   // PODGLĄD/EDYCJA — gdy `viewerOpen`, edytor przejmuje CAŁĄ treść ekranu i klawiaturę (Figma
   // „fullscreen_view/edit"). Inaczej: siatka + klawiatura galerii.
-  const finalContent = viewerOpen ? editor.content : content;
-  const finalKeyboard = viewerOpen ? editor.keyboard : keyboard;
+  // MENU (kontekstowe menu galerii) można otworzyć też NAD podglądem: wtedy popover + klawiatura galerii
+  // (nawigacja joystickiem, CLOSE MENU) przejmują sterowanie, a treść podglądu zostaje pod spodem.
+  const finalContent = viewerOpen
+    ? (menuOpen ? <>{editor.content}<GalleryMenu index={menuIndex} onPick={pickMenu} leftHanded={leftHanded} /></> : editor.content)
+    : content;
+  const finalKeyboard = menuOpen ? keyboard : viewerOpen ? editor.keyboard : keyboard;
 
   return { content: finalContent, keyboard: finalKeyboard, goBack, pinchColumns, showModeToast, viewerOpen, menuOpen, allFolders, typing: viewerOpen ? editor.typing : false };
 }

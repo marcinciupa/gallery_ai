@@ -79,10 +79,14 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
         ty.setValue(clamp(g.dy, -max, max));
         if (fired.current) return;
         const th = dims.joystick.dirThreshold;
-        if (Math.abs(g.dx) > th || Math.abs(g.dy) > th) {
+        const ax = Math.abs(g.dx), ay = Math.abs(g.dy);
+        // odpal, gdy dominująca oś przekroczy próg i WYRAŹNIE przeważa (≥1.3×) — inaczej skośny swipe
+        // odpala w bok zamiast w dół/górę (rzadkie „poszło nie tam"); przy jasnej dominacji reaguje od razu.
+        const dom = Math.max(ax, ay), sub = Math.min(ax, ay);
+        if (dom > th && dom >= sub * 1.3) {
           fired.current = true;
           // dominująca oś decyduje o kierunku (4-kier., bez skosów)
-          const dir: Dir = Math.abs(g.dx) >= Math.abs(g.dy) ? (g.dx > 0 ? 'right' : 'left') : (g.dy > 0 ? 'down' : 'up');
+          const dir: Dir = ax >= ay ? (g.dx > 0 ? 'right' : 'left') : (g.dy > 0 ? 'down' : 'up');
           callDir(dir);
           startRepeat(dir); // przy repeat: trzymanie wychylenia powtarza kierunek
           hapticKnob(0.5, stepMs()); // krótki impuls na zmianie (jak knob discrete)

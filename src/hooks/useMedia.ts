@@ -11,8 +11,17 @@
  */
 import { useEffect, useState } from 'react';
 import { Platform, ImageSourcePropType } from 'react-native';
+import { getAiTags } from '../lib/aiTags';
 
 export type MediaStatus = 'idle' | 'loading' | 'denied' | 'ready' | 'error' | 'unsupported';
+
+// Źródło zdjęcia wzbogacone o flagi na etykiety miniatur (extra pola ignorowane przez <Image>).
+export type PhotoSource = { uri: string; raw?: boolean; ai?: boolean };
+
+// Formaty RAW (po rozszerzeniu nazwy pliku). Detekcja best-effort — filename z metadanych, gdy dostępny.
+const RAW_RE = /\.(dng|arw|cr[23w]|nef|nrw|orf|raf|rw2|pef|sr[2fw]|raw|x3f|3fr|fff|iiq|kdc|mos|mrw|dcr|k25)$/i;
+const isRaw = (name?: string) => !!name && RAW_RE.test(name);
+const flag = (m: any, tags: Set<string>): PhotoSource => ({ uri: m.id, raw: isRaw(m.filename), ai: tags.has(m.id) });
 // count opcjonalny — świadomie NIE liczymy zdjęć na starcie (skan wszystkich metadanych = lawina GC = jank).
 export type MediaFolder = { id: string; name: string; cover?: ImageSourcePropType; count?: number };
 
@@ -32,6 +41,7 @@ export function useMedia() {
         if (!cancelled) setStatus('denied');
         return;
       }
+      const tags = await getAiTags();
       const albums = await ML.Album.getAll();
       const out = (
         await Promise.all(
@@ -46,7 +56,7 @@ export function useMedia() {
                 .exeForMetadata();
               if (!meta.length) return null; // pomiń albumy bez zdjęć
               const title = await a.getTitle();
-              return { id: a.id, name: title ?? 'ALBUM', cover: { uri: meta[0].id } } as MediaFolder;
+              return { id: a.id, name: title ?? 'ALBUM', cover: flag(meta[0], tags) as ImageSourcePropType } as MediaFolder;
             } catch {
               return null;
             }
@@ -87,13 +97,14 @@ export function useMedia() {
   const loadPhotos = async (albumId: string): Promise<ImageSourcePropType[]> => {
     if (Platform.OS === 'web') return [];
     const ML: any = await import('expo-media-library');
+    const tags = await getAiTags();
     const meta = await new ML.Query()
       .album(new ML.Album(albumId))
       .eq(ML.AssetField.MEDIA_TYPE, ML.MediaType.IMAGE)
       .orderBy({ key: ML.AssetField.CREATION_TIME, ascending: false })
       .limit(500)
       .exeForMetadata();
-    return meta.map((m: any) => ({ uri: m.id } as ImageSourcePropType));
+    return meta.map((m: any) => flag(m, tags) as ImageSourcePropType);
   };
 
   return { folders, status, error, loadPhotos };
