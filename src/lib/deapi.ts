@@ -6,7 +6,7 @@
  * krótkim opóźnieniu (echo) — pełny przepływ UI działa bez backendu. Po postawieniu proxy wystarczy
  * ustawić env; realna ścieżka (multipart image+prompt → { uri }) jest już poniżej.
  */
-import { ensureLocalFile } from './localFile';
+import { ensureLocalFile, bakeOrientation } from './localFile';
 
 const BASE = (process.env.EXPO_PUBLIC_API_URL || '').replace(/\/+$/, '');
 const APP_KEY = process.env.EXPO_PUBLIC_APP_KEY;
@@ -119,7 +119,8 @@ export async function boostPrompt({ prompt }: { prompt: string }): Promise<Promp
 async function postImage(path: string, uri: string, fields: Record<string, string> = {}, extraImages?: Record<string, string>): Promise<ImageEditResult> {
   // Android otwiera part FormData tylko dla file/content/asset — zdalny wynik (https/data) najpierw
   // sprowadzamy do lokalnego pliku, inaczej łańcuchowa edycja wysyłałaby pusty obraz.
-  const localUri = await ensureLocalFile(uri);
+  // Następnie WYPALAMY orientację EXIF w piksele — backend ignoruje EXIF, więc bez tego zwraca obrócony wynik.
+  const localUri = await bakeOrientation(await ensureLocalFile(uri));
   const form = new FormData();
   for (const [k, v] of Object.entries(fields)) form.append(k, v);
   form.append('image', { uri: localUri, name: 'image.png', type: 'image/png' } as any);

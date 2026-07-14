@@ -9,8 +9,10 @@
 import { forwardRef, RefObject, useImperativeHandle, useRef, useState } from 'react';
 import { View, Text, Pressable, TextInput, ImageSourcePropType } from 'react-native';
 import { color, font, screen, textShadow } from '../theme/tokens';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaskCanvas, MaskCanvasHandle } from './MaskCanvas';
 import { MenuBar } from '../components/chrome/MenuBar';
+import { useKeyboardHeight } from '../hooks/useKeyboardHeight';
 
 const phosphorGlow = {
   textShadowColor: textShadow.phosphor.color,
@@ -60,8 +62,15 @@ export const AiStage = forwardRef<AiStageHandle, {
   const inputText = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: color.dark21, padding: 0 } as const;
   const panel = typing ? null : first === 0 ? 'mode' : 'size';
 
+  // Podczas pisania PODNIEŚ zawartość (z polem promptu na dole) o wysokość klawiatury — inaczej na części
+  // urządzeń (edge-to-edge, gdzie adjustResize zawodzi) systemowa klawiatura zasłania input. Odejmujemy dolny
+  // inset (navbar już wliczony w padding roota App), by prompt siedział tuż nad klawiaturą, bez zbędnej luki.
+  const kb = useKeyboardHeight();
+  const insets = useSafeAreaInsets();
+  const liftBottom = typing ? Math.max(0, kb - insets.bottom) : 0;
+
   return (
-    <View style={{ flex: 1, alignSelf: 'stretch', gap: 8 }}>
+    <View style={{ flex: 1, alignSelf: 'stretch', gap: 8, paddingBottom: liftBottom }}>
       {/* obraz + maska (rozmiar/tryb pędzla). Podczas pisania: pędzel wyłączony, pasek zakładek ukryty. */}
       <MaskCanvas
         ref={maskRef}

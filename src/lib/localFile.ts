@@ -11,6 +11,7 @@
  * Import z `expo-file-system/legacy` = stabilne API (downloadAsync/writeAsStringAsync) w SDK 56.
  */
 import * as FileSystem from 'expo-file-system/legacy';
+import * as ImageManipulator from 'expo-image-manipulator';
 
 const LOCAL_SCHEME = /^(file|content|asset|ph):/i;
 const EXT_RE = /\.(png|jpe?g|webp)(?:\?|$)/i;
@@ -43,4 +44,19 @@ export async function ensureLocalFile(uri: string): Promise<string> {
   }
 
   return uri; // nieznany schemat — spróbuj jak jest (nie blokujemy)
+}
+
+/**
+ * bakeOrientation — WYPALA orientację EXIF w piksele (jak normalizacja w CropStage): manipulator dekoduje obraz
+ * z uwzględnieniem EXIF i zapisuje „prosto", bez flagi orientacji. Dzięki temu backend (który ignoruje EXIF)
+ * dostaje już poprawnie zorientowane piksele i nie zwraca obróconego/odwróconego wyniku (np. remove-background).
+ * PNG (bezstratnie — brak degradacji przy edycji łańcuchowej). Błąd → oryginał (nie blokujemy wysyłki).
+ */
+export async function bakeOrientation(uri: string): Promise<string> {
+  try {
+    const r = await ImageManipulator.manipulateAsync(uri, [], { format: ImageManipulator.SaveFormat.PNG });
+    return r.uri;
+  } catch {
+    return uri;
+  }
 }
