@@ -6,6 +6,8 @@
  * krótkim opóźnieniu (echo) — pełny przepływ UI działa bez backendu. Po postawieniu proxy wystarczy
  * ustawić env; realna ścieżka (multipart image+prompt → { uri }) jest już poniżej.
  */
+import { ensureLocalFile } from './localFile';
+
 const BASE = (process.env.EXPO_PUBLIC_API_URL || '').replace(/\/+$/, '');
 const APP_KEY = process.env.EXPO_PUBLIC_APP_KEY;
 const appKeyHeader: Record<string, string> = APP_KEY ? { 'X-App-Key': APP_KEY } : {};
@@ -115,22 +117,32 @@ export async function boostPrompt({ prompt }: { prompt: string }): Promise<Promp
 
 /** Wspólne wysłanie obrazu (+pola, +opcjonalna maska) do proxy; kontrakt: 200 { uri?; image_base64? }. */
 async function postImage(path: string, uri: string, fields: Record<string, string> = {}, extraImages?: Record<string, string>): Promise<ImageEditResult> {
+  // Android otwiera part FormData tylko dla file/content/asset — zdalny wynik (https/data) najpierw
+  // sprowadzamy do lokalnego pliku, inaczej łańcuchowa edycja wysyłałaby pusty obraz.
+  const localUri = await ensureLocalFile(uri);
   const form = new FormData();
   for (const [k, v] of Object.entries(fields)) form.append(k, v);
-  form.append('image', { uri, name: 'image.png', type: 'image/png' } as any);
+  form.append('image', { uri: localUri, name: 'image.png', type: 'image/png' } as any);
   for (const [k, v] of Object.entries(extraImages ?? {})) form.append(k, { uri: v, name: `${k}.png`, type: 'image/png' } as any);
 
   const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 60000); // generacja bywa wolna — hojny limit
+  const timeout = setTimeout(() => ctrl.abort(), 90000); // generacja bywa wolna (~30 s) — hojny limit
   try {
     const res = await fetch(`${BASE}${path}`, { method: 'POST', headers: { ...appKeyHeader }, body: form, signal: ctrl.signal });
-    if (!res.ok) throw new ApiError(res.status, `${path} failed (${res.status})`);
+    if (!res.ok) {
+      // backend zwraca JSON { error }, ale bądźmy odporni na nie-JSON (np. HTML z proxy pośredniego)
+      let msg = `${path} failed (${res.status})`;
+      try { const j = await res.json(); if (j?.error) msg = String(j.error); } catch {}
+      throw new ApiError(res.status, msg);
+    }
     const json: { uri?: string; image_base64?: string } = await res.json();
     if (json.uri) return { uri: json.uri };
     if (json.image_base64) return { uri: `data:image/png;base64,${json.image_base64}` };
     throw new ApiError(0, `${path}: empty response`);
   } catch (e) {
     if (e instanceof ApiError) throw e;
+    // AbortController po timeoucie rzuca AbortError („Aborted") — pokaż to jako czytelny TIMEOUT
+    if (e instanceof Error && e.name === 'AbortError') throw new ApiError(0, 'TIMEOUT — generation took too long');
     throw new ApiError(0, e instanceof Error ? e.message : 'network error');
   } finally {
     clearTimeout(timeout);

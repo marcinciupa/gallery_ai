@@ -5,6 +5,7 @@
  */
 import { Platform } from 'react-native';
 import { addAiTag } from './aiTags';
+import { ensureLocalFile } from './localFile';
 
 export type SaveResult = 'ok' | 'denied' | 'error';
 
@@ -29,10 +30,13 @@ export async function saveImageToLibrary(uri: string, opts?: { ai?: boolean }): 
     const ML: any = await import('expo-media-library');
     const perm = await ML.requestPermissionsAsync();
     if (!perm.granted) return 'denied';
-    const asset = await ML.Asset.create(uri); // dodaje plik do biblioteki (nowe klasowe API)
+    // wynik AI to zdalny https:// / data: — Asset.create wymaga lokalnego pliku, więc najpierw pobieramy
+    const local = await ensureLocalFile(uri);
+    const asset = await ML.Asset.create(local); // dodaje plik do biblioteki (nowe klasowe API)
     if (opts?.ai && asset?.id) { try { await addAiTag(asset.id); } catch { /* tag best-effort */ } }
     return 'ok';
-  } catch {
+  } catch (e) {
+    console.warn('[saveImage] save failed:', e); // nie połykaj po cichu — czytelna przyczyna w logach
     return 'error';
   }
 }

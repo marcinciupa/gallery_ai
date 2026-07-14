@@ -21,6 +21,7 @@ import { AiStage, AiStageHandle } from './AiStage';
 import { editImage, fillImage, boostPrompt } from '../lib/deapi';
 import { saveImageToLibrary } from '../lib/saveImage';
 import { getProvenance, isAiSource, type Provenance, type SourceType } from '../lib/imageMeta';
+import { ensureLocalFile } from '../lib/localFile';
 
 const phosphorGlow = {
   textShadowColor: textShadow.phosphor.color,
@@ -327,7 +328,8 @@ export function useImageEditor({
     setProcessing(true); setAiError(null);
     try {
       const res = await fillImage({ uri: workingUri });
-      if (res?.uri) { setWorkingUri(res.uri); addAiTool('GEN FILL'); }
+      // wynik (zdalny https / data:) sprowadzamy do lokalnego pliku — pod zapis i kolejne edycje
+      if (res?.uri) { setWorkingUri(await ensureLocalFile(res.uri)); addAiTool('GEN FILL'); }
       setFillOffer(false);
     } catch (e) {
       setAiError(e instanceof Error ? `ERROR: ${e.message}` : 'FILL FAILED');
@@ -359,7 +361,8 @@ export function useImageEditor({
     setProcessing(true);
     try {
       const res = await editImage({ uri, prompt });
-      if (res?.uri) { setWorkingUri(res.uri); addAiTool('TEXT-TO-IMAGE'); setAiPrompt(prompt); setDraft(''); setView('viewer'); }
+      // wynik (zdalny https / data:) sprowadzamy do lokalnego pliku — pod zapis i kolejne edycje
+      if (res?.uri) { setWorkingUri(await ensureLocalFile(res.uri)); addAiTool('TEXT-TO-IMAGE'); setAiPrompt(p); setDraft(''); setView('viewer'); }
     } catch (e) {
       setAiError(e instanceof Error ? `ERROR: ${e.message}` : 'EDIT FAILED');
     } finally {

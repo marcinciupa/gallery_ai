@@ -17,7 +17,7 @@
         "android.permission.ACTIVITY_RECOGNITION"
       ],
       "adaptiveIcon": {
-        "backgroundColor": "#FF3A3A",
+        "backgroundColor": "#0F1317",
         "foregroundImage": "./assets/android-icon-foreground.png"
       },
       "predictiveBackGestureEnabled": false
@@ -38,6 +38,12 @@
         }
       ],
       "expo-image"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "f6c4a81e-0d1e-47a3-bdb1-c6903574a063"
+      }
+    },
+    "owner": "pietrus914"
   }
 }

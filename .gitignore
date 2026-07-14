@@ -38,3 +38,6 @@ ios/
 
 # working files (design refs, scratch)
 scratchpad/
+
+# store graphics — intermediate AI generations (reproducible; finals are kept)
+store_assets/raw/
