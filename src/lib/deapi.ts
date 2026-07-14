@@ -8,7 +8,7 @@
  */
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
-import { ensureLocalFile } from './localFile';
+import { ensureLocalFile, bakeOrientation } from './localFile';
 
 const BASE = (process.env.EXPO_PUBLIC_API_URL || '').replace(/\/+$/, '');
 const APP_KEY = process.env.EXPO_PUBLIC_APP_KEY;
@@ -151,9 +151,10 @@ async function postImage(
   fields: Record<string, string> = {},
   extraImages?: Record<string, string>,
 ): Promise<ImageEditResult> {
-  // zdalny wynik (https/data) najpierw sprowadzamy do lokalnego pliku, inaczej łańcuchowa edycja
-  // wysyłałaby pusty obraz.
-  const localUri = await ensureLocalFile(uri);
+  // zdalny wynik (https/data) najpierw sprowadzamy do lokalnego pliku (inaczej łańcuchowa edycja wysyłałaby
+  // pusty obraz), a potem WYPALAMY orientację EXIF w piksele — backend ignoruje EXIF, więc bez tego zwraca
+  // obrócony/odwrócony wynik (np. remove-background).
+  const localUri = await bakeOrientation(await ensureLocalFile(uri));
   const url = `${BASE}${path}`;
 
   // WEB: brak natywnego uploadAsync — użyj fetch+FormData (web to tylko podgląd UI, nie ścieżka produkcyjna AI).

@@ -4,6 +4,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { View, Text, Platform, StatusBar as RNStatusBar, BackHandler, useWindowDimensions } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   useFonts,
   Inter_400Regular,
@@ -29,7 +30,16 @@ TextWithDefaults.defaultProps = { ...(TextWithDefaults.defaultProps || {}), incl
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
+// SafeAreaProvider musi otaczać komponent, który czyta insety (useSafeAreaInsets) — stąd rozdział App/AppInner.
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppInner />
+    </SafeAreaProvider>
+  );
+}
+
+function AppInner() {
   renderTicker.n++; // diagnostyka: liczba re-renderów App (HUD pokazuje R/s)
   const [fontsLoaded] = useFonts({
     Inter_400Regular,
@@ -117,13 +127,18 @@ export default function App() {
     return <View style={{ flex: 1, backgroundColor: '#000000' }} />;
   }
 
-  const topInset = Platform.OS === 'android' && variant === 'device' ? RNStatusBar.currentHeight || 0 : 0;
+  // INSETY systemowe: górny pasek (status) + DOLNY navbar (3-przyciski/gesty). Bez dolnego insetu navbar
+  // nachodził na klawiaturę aplikacji. Tylko w trybie „device" (fullscreen celowo idzie edge-to-edge).
+  const insets = useSafeAreaInsets();
+  const isDevice = variant === 'device';
+  const topInset = Platform.OS === 'android' && isDevice ? RNStatusBar.currentHeight || 0 : 0;
+  const bottomInset = isDevice ? insets.bottom : 0;
   const barStyle = themes[settings.theme].casingDark ? 'light' : 'dark';
   // PODGLĄD WEB: skaluj całe urządzenie 390×844 do okna (zachowując proporcje).
   const webScale = Platform.OS === 'web' ? Math.min(winW / 390, winH / 844, 1) : 1;
 
   return (
-    <View style={{ flex: 1, paddingTop: topInset, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' }}>
+    <View style={{ flex: 1, paddingTop: topInset, paddingBottom: bottomInset, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' }}>
       <View
         style={
           Platform.OS === 'web'

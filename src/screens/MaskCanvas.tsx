@@ -25,7 +25,7 @@ export const SELECT_MODES = ['ADD TO SELECT', 'REMOVE FROM SELECT'] as const; //
 export const BRUSH_MIN = 1, BRUSH_MAX = 20, BRUSH_DEF = 10;
 const BRUSH_STEP_PX = 14; // px przeciągnięcia na 1 jednostkę rozmiaru
 const VEIL = 'rgba(26,26,26,0.72)'; // przygaszenie niezaznaczonego zdjęcia (zaznaczenie świeci jasnym oryginałem)
-const HALO = 4;                     // grubość fosforowej obwódki wokół zaznaczenia (px, po ~2px na bok)
+const RING = 2;                     // grubość fosforowej obwódki (px) — powstaje na KAŻDEJ krawędzi zaznaczenia (add i remove)
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 
 type Pt = { x: number; y: number };
@@ -118,11 +118,10 @@ export const MaskCanvas = forwardRef<MaskCanvasHandle, {
   const fit = areaW > 0 && areaH > 0
     ? (areaW / areaH > ratio ? { w: areaH * ratio, h: areaH } : { w: areaW, h: areaW / ratio })
     : { w: 0, h: 0 };
-  const boxRef = useRef({ ox: 0, oy: 0 });
-  boxRef.current = { ox: (areaW - fit.w) / 2, oy: (areaH - fit.h) / 2 };
-
   useEffect(() => { onState?.({ hasStrokes: strokes.length > 0 }); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [strokes.length]);
 
+  // responder SIEDZI na POLU OBRAZU (fit-box, pointerEvents="box-only"), więc locationX/Y jest wprost we
+  // współrzędnych maski/obrazu — bez korekty offsetu (wcześniej odejmowany offset przesuwał malowanie).
   const responder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => paintRef.current,
@@ -130,16 +129,14 @@ export const MaskCanvas = forwardRef<MaskCanvasHandle, {
       onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: (e) => {
         if (!paintRef.current) return;
-        const b = boxRef.current;
-        const x = e.nativeEvent.locationX - b.ox, y = e.nativeEvent.locationY - b.oy;
+        const x = e.nativeEvent.locationX, y = e.nativeEvent.locationY;
         const s: Stroke = { mode: modeRef.current, size: brushRef.current, pts: [{ x, y }] };
         liveRef.current = s; setLive(s);
         onPaintStart?.();
       },
       onPanResponderMove: (e) => {
         const s = liveRef.current; if (!s) return;
-        const b = boxRef.current;
-        const x = e.nativeEvent.locationX - b.ox, y = e.nativeEvent.locationY - b.oy;
+        const x = e.nativeEvent.locationX, y = e.nativeEvent.locationY;
         const last = s.pts[s.pts.length - 1];
         if (Math.hypot(x - last.x, y - last.y) < 2) return;
         const ns: Stroke = { ...s, pts: [...s.pts, { x, y }] };
@@ -171,10 +168,10 @@ export const MaskCanvas = forwardRef<MaskCanvasHandle, {
           setAreaH((a) => (Math.abs(a - height) < 1 ? a : height));
         }}
         style={{ flex: 1, alignSelf: 'stretch', borderRadius: 2, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}
-        {...responder.panHandlers}
       >
         {fit.w > 0 ? (
-          <View style={{ width: fit.w, height: fit.h }}>
+          // box-only: to POLE jest celem dotyku (nie dzieci) → locationX/Y są względem pola obrazu
+          <View style={{ width: fit.w, height: fit.h }} pointerEvents="box-only" {...responder.panHandlers}>
             <ExpoImage
               source={source}
               contentFit="fill"
@@ -190,20 +187,23 @@ export const MaskCanvas = forwardRef<MaskCanvasHandle, {
                 {/* …a zaznaczenie odsłania JASNY oryginał (maska) + fosforowa obwódka. add=biel(odsłoń), remove=czerń(schowaj). */}
                 <Svg pointerEvents="none" width={fit.w} height={fit.h} style={{ position: 'absolute', left: 0, top: 0 }}>
                   <Defs>
-                    <Mask id="mfill" x="0" y="0" width={fit.w} height={fit.h}>
+                    {/* KSZTAŁT zaznaczenia (fosfor): add=biel, remove=czerń, pełna szerokość pędzla */}
+                    <Mask id="mphos" x="0" y="0" width={fit.w} height={fit.h}>
                       {allStrokes.map((s, i) => (
                         <Path key={i} d={toPath(s.pts)} stroke={s.mode === 0 ? '#fff' : '#000'} strokeWidth={s.size} strokeLinecap="round" strokeLinejoin="round" fill="none" />
                       ))}
                     </Mask>
-                    <Mask id="mhalo" x="0" y="0" width={fit.w} height={fit.h}>
+                    {/* ODSŁONIĘTY oryginał = kształt WCIĄGNIĘTY o RING (add węższy, remove szerszy) → wokół CAŁEJ
+                        granicy (także tam, gdzie odejmowano) zostaje fosforowa obwódka */}
+                    <Mask id="mfill" x="0" y="0" width={fit.w} height={fit.h}>
                       {allStrokes.map((s, i) => (
-                        <Path key={i} d={toPath(s.pts)} stroke={s.mode === 0 ? '#fff' : '#000'} strokeWidth={s.size + HALO} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                        <Path key={i} d={toPath(s.pts)} stroke={s.mode === 0 ? '#fff' : '#000'} strokeWidth={s.mode === 0 ? Math.max(1, s.size - 2 * RING) : s.size + 2 * RING} strokeLinecap="round" strokeLinejoin="round" fill="none" />
                       ))}
                     </Mask>
                   </Defs>
-                  {/* fosforowy kształt (nieco większy) → z niego zostaje obwódka po nałożeniu jasnego obrazu */}
-                  <Rect x="0" y="0" width={fit.w} height={fit.h} fill={screen.olive.primary} mask="url(#mhalo)" />
-                  {/* jasny oryginał tylko wewnątrz zaznaczenia */}
+                  {/* fosforowy kształt całego zaznaczenia… */}
+                  <Rect x="0" y="0" width={fit.w} height={fit.h} fill={screen.olive.primary} mask="url(#mphos)" />
+                  {/* …a na wierzchu jasny oryginał (nieco mniejszy) → z fosforu zostaje tylko obwódka */}
                   {uri ? <SvgImage href={{ uri }} x="0" y="0" width={fit.w} height={fit.h} preserveAspectRatio="none" mask="url(#mfill)" /> : null}
                 </Svg>
               </>
