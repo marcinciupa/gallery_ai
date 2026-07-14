@@ -13,6 +13,7 @@ import { View, Text, Pressable, Animated, PanResponder, Image as RNImage, ImageS
 import { Image as ExpoImage } from 'expo-image';
 import { color, font, screen, textShadow } from '../theme/tokens';
 import type { KeyboardConfig } from '../components/chrome/Keyboard';
+import { MenuBar } from '../components/chrome/MenuBar';
 import { ScreenTopBar, AiStatusView } from './ScreenChrome';
 import { CropStage, CropHandle } from './CropStage';
 import { MagicEraseStage, MagicEraseHandle, MagicEraseState } from './MagicEraseStage';
@@ -178,56 +179,6 @@ function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims }: {
           />
         </Animated.View>
       ) : null}
-    </View>
-  );
-}
-
-/**
- * EditTabBar — główny pasek trybu (AI EDIT / CROP & ROTATE / SETTINGS). Fosforowe tło, ciemny tekst;
- * zaznaczona zakładka = ciemna pigułka z fosforowym tekstem i bulletem „•" (jak aktywny AspectBar w CROP).
- * `focused` = joystick jest na tym pasku (subtelne wygaszenie, gdy fokus jest na pod-pasku AI).
- */
-function EditTabBar({ index, focused, onPick }: { index: number; focused: boolean; onPick: (i: number) => void }) {
-  const txt = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size } as const;
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', alignSelf: 'stretch', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 2, backgroundColor: screen.olive.primary, ...(PILL as any) }}>
-      {MAIN_TABS.map((label, i) =>
-        i === index ? (
-          <Pressable key={label} onPress={() => onPick(i)} hitSlop={{ top: 16, bottom: 16, left: 6, right: 6 }} style={{ flexDirection: 'row', alignItems: 'center', gap: 3, paddingVertical: 3, paddingHorizontal: 3, borderRadius: 2, backgroundColor: color.dark21 }}>
-            <Text style={{ ...txt, color: screen.olive.primary, ...phosphorGlow }}>{'•'}</Text>
-            <Text style={{ ...txt, color: screen.olive.primary, ...phosphorGlow }}>{label}</Text>
-          </Pressable>
-        ) : (
-          <Pressable key={label} onPress={() => onPick(i)} hitSlop={{ top: 16, bottom: 16, left: 6, right: 6 }} style={{ paddingVertical: 3 }}>
-            <Text style={{ ...txt, color: color.dark21 }}>{label}</Text>
-          </Pressable>
-        ),
-      )}
-    </View>
-  );
-}
-
-/**
- * AiFunctionBar — pod-pasek funkcji AI (MAGIC ERASE / TEXT TO IMAGE / FILTERS). Bez tła, fosforowy tekst;
- * zaznaczona funkcja = fosforowa pigułka z ciemnym tekstem (jak nieaktywny AspectBar). Tylko TEXT TO IMAGE
- * działa (reszta = stub). `focused` = joystick jest na pod-pasku.
- */
-function AiFunctionBar({ index, focused, onPick }: { index: number; focused: boolean; onPick: (i: number) => void }) {
-  const txt = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size } as const;
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', alignSelf: 'stretch', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 2 }}>
-      {AI_FUNCS.map((label, i) =>
-        i === index ? (
-          <Pressable key={label} onPress={() => onPick(i)} hitSlop={{ top: 16, bottom: 16, left: 6, right: 6 }} style={{ flexDirection: 'row', alignItems: 'center', gap: 3, paddingVertical: 3, paddingHorizontal: 4, borderRadius: 2, backgroundColor: screen.olive.primary, ...(PILL as any) }}>
-            <Text style={{ ...txt, color: color.dark21 }}>{'•'}</Text>
-            <Text style={{ ...txt, color: color.dark21 }}>{label}</Text>
-          </Pressable>
-        ) : (
-          <Pressable key={label} onPress={() => onPick(i)} hitSlop={{ top: 16, bottom: 16, left: 6, right: 6 }} style={{ paddingVertical: 3 }}>
-            <Text style={{ ...txt, color: screen.olive.primary, ...phosphorGlow }}>{label}</Text>
-          </Pressable>
-        ),
-      )}
     </View>
   );
 }
@@ -651,8 +602,8 @@ export function useImageEditor({
             Pod-pasek funkcji AI (MAGIC ERASE / TEXT TO IMAGE / FILTERS) tylko gdy aktywna zakładka AI EDIT. */}
         {menuOpen && view === 'viewer' ? (
           <View style={{ alignSelf: 'stretch', gap: 16 }}>
-            {mainIdx === 0 ? <AiFunctionBar index={aiIdx} focused={menuTier === 'sub'} onPick={chooseAiFunc} /> : null}
-            <EditTabBar index={mainIdx} focused={menuTier === 'main'} onPick={chooseMainTab} />
+            {mainIdx === 0 ? <MenuBar items={AI_FUNCS} index={aiIdx} focused={menuTier === 'sub'} onPick={chooseAiFunc} /> : null}
+            <MenuBar items={MAIN_TABS} index={mainIdx} focused={menuTier === 'main'} onPick={chooseMainTab} />
           </View>
         ) : null}
 

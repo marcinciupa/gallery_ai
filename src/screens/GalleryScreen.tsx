@@ -21,6 +21,9 @@ import { useImageEditor } from './EditorScreen';
 import { MOCK_FOLDERS, type Folder } from './mockFolders';
 import { Diag, DIAG_ALL } from '../lib/diag';
 import { getProvenance, isAiSource } from '../lib/imageMeta';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const PREFS_KEY = 'gallery_ai:view_prefs'; // zapamiętane preferencje widoku galerii
 
 // MOCK_FOLDERS re-eksportowane dla App (natywnie puste, na web z `mockFolders.web.ts`)
 export { MOCK_FOLDERS };
@@ -200,6 +203,28 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const cols = feedMode ? feedCols : galleryCols;
   const setColsActive = (fn: (c: 2 | 3) => 2 | 3) => (feedMode ? setFeedCols(fn) : setGalleryCols(fn));
 
+  // PERSYSTENCJA preferencji widoku (rozmiar miniatur, tryb feed/gallery, wyróżnione/powiększone kafle feeda)
+  const prefsLoaded = useRef(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(PREFS_KEY);
+        if (raw) {
+          const p = JSON.parse(raw);
+          if (p.galleryCols === 2 || p.galleryCols === 3) setGalleryCols(p.galleryCols);
+          if (p.feedCols === 2 || p.feedCols === 3) setFeedCols(p.feedCols);
+          if (typeof p.feedMode === 'boolean') setFeedMode(p.feedMode);
+          if (p.feedSpans && typeof p.feedSpans === 'object') setFeedSpans(p.feedSpans);
+        }
+      } catch { /* brak/uszkodzone prefs → domyślne */ }
+      prefsLoaded.current = true;
+    })();
+  }, []);
+  useEffect(() => {
+    if (!prefsLoaded.current) return; // nie nadpisuj zapisu domyślnymi zanim wczytamy
+    AsyncStorage.setItem(PREFS_KEY, JSON.stringify({ galleryCols, feedCols, feedMode, feedSpans })).catch(() => {});
+  }, [galleryCols, feedCols, feedMode, feedSpans]);
+
   // widoczne foldery = whitelist (jeśli niepusta) − blacklist. Reszta ekranu (siatka/feed/nawigacja) używa TYCH.
   // Źródło (`allFolders`) i `media` podaje App (jedno useMedia — współdzielone z Settings).
   const folders: Folder[] = useMemo(() => applyLibraryFilter(allFolders, included, excluded), [allFolders, included, excluded]);
@@ -255,17 +280,50 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (n <= 0 || feedMode) return; // feed ma własny auto-scroll (FeedGrid)
+    if (n <= 0 || feedMode || viewerOpen) return; // feed ma własny auto-scroll; przy otwartym podglądzie siatka jest odmontowana
     // FlatList z numColumns pracuje na WIERSZACH (getItemCount = ceil(n/cols)), więc scrollToIndex oczekuje
-    // indeksu WIERSZA, nie elementu. Podanie indeksu elementu wywalało scroll dla 2. kolumny/dalszych kafli
-    // (index ≥ liczby wierszy → wyjątek). Zaznaczenie i tak jest w tym wierszu, więc centrujemy wiersz.
+    // indeksu WIERSZA, nie elementu. Zaznaczenie jest w tym wierszu, więc centrujemy wiersz. Po zamknięciu
+    // podglądu (viewerOpen→false) siatka montuje się od nowa (scroll na górze) — rAF czeka na ref/layout,
+    // żeby WRÓCIĆ do oglądanego pliku (getItemLayout czyni scroll pewnym).
     const row = Math.floor(selected / cols);
-    try { listRef.current?.scrollToIndex({ index: row, animated: true, viewPosition: 0.5 }); } catch {}
-    // UWAGA: bez `cols` w zależnościach — na zmianę rozmiaru (THUMB SIZE) FlatList jest REMONTOWANY (key=cols)
-    // i wtedy scrollToIndex odpaliłby się z niezmierzonym viewportem (visibleLength=0) → skok o ~½ kafla.
-  }, [selected, openFolder]);
+    const raf = requestAnimationFrame(() => { try { listRef.current?.scrollToIndex({ index: row, animated: false, viewPosition: 0.5 }); } catch {} });
+    return () => cancelAnimationFrame(raf);
+    // UWAGA: bez `cols` w zależnościach — na zmianę rozmiaru (THUMB SIZE) FlatList jest REMONTOWANY (key=cols).
+  }, [selected, openFolder, viewerOpen]);
 
-  const move = (d: number) => setSelected((i) => Math.max(0, Math.min(n - 1, i + d)));
+  // NAWIGACJA ramką. Pojedynczy ruch W PIONIE (zmiana wiersza): najpierw KRÓTKI animowany scroll, dopiero
+  // po nim ramka przeskakuje na nowy element (SCROLL_LEAD_MS). Ruch w poziomie (ten sam wiersz) i PRZYTRZYMANIE
+  // joysticka (repeat, szybkie kolejne ruchy) → natychmiast. `targetRef` = kursor logiczny (może wyprzedzać
+  // `selected` w oknie animacji); resync do `selected`, gdy nie ma zaległego przeskoku.
+  const selRef = useRef(selected); selRef.current = selected;
+  const targetRef = useRef(selected);
+  const moveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastMoveAt = useRef(0);
+  const SCROLL_LEAD_MS = 130;
+  const scrollToIdx = (idx: number) => {
+    if (feedMode) return; // feed: FeedGrid scrolluje sam na zmianę selected
+    try { listRef.current?.scrollToIndex({ index: Math.floor(idx / cols), animated: true, viewPosition: 0.5 }); } catch {}
+  };
+  const move = (d: number) => {
+    if (n <= 0) return;
+    if (!moveTimer.current) targetRef.current = selRef.current; // brak zaległej animacji → kursor = realny stan
+    const base = targetRef.current;
+    const target = Math.max(0, Math.min(n - 1, base + d));
+    if (target === base) return; // krawędź
+    targetRef.current = target;
+    if (feedMode || viewerOpen) { setSelected(target); return; } // feed / podgląd (prev-next) → natychmiast, bez leadowania
+    const now = Date.now();
+    const rapid = now - lastMoveAt.current < 250; // szybkie kolejne ruchy = przytrzymanie
+    lastMoveAt.current = now;
+    if (moveTimer.current) { clearTimeout(moveTimer.current); moveTimer.current = null; }
+    const sameRow = Math.floor(base / cols) === Math.floor(target / cols);
+    if (sameRow || rapid) { setSelected(target); return; } // ten sam wiersz (poziom) LUB hold → natychmiast
+    scrollToIdx(target);                                    // pionowy pojedynczy: KRÓTKI animowany scroll…
+    moveTimer.current = setTimeout(() => { moveTimer.current = null; setSelected(target); }, SCROLL_LEAD_MS); // …potem ramka
+  };
+  // przerwij zaległy przeskok ramki przy zmianie folderu/trybu/podglądu (żeby nie skoczyć na nieaktualny target)
+  useEffect(() => () => { if (moveTimer.current) clearTimeout(moveTimer.current); }, []);
+  useEffect(() => { if (moveTimer.current) { clearTimeout(moveTimer.current); moveTimer.current = null; } }, [openFolder, feedMode, viewerOpen]);
   const toggleView = () => setColsActive((c) => (c === 2 ? 3 : 2));
   // pinch na ekranie: rozsunięcie ('out') → mniej kolumn (większe kafle), zsunięcie ('in') → więcej
   const pinchColumns = (dir: 'in' | 'out') =>

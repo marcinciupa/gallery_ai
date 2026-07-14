@@ -7,40 +7,12 @@
  * STAN: APPLY woła STUB deAPI (echo) — realny inpaint z maską po podłączeniu proxy (rasteryzacja = TODO).
  */
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { View, Text, Pressable, Image as RNImage, ImageSourcePropType } from 'react-native';
-import { color, font, screen, textShadow } from '../theme/tokens';
+import { View, Image as RNImage, ImageSourcePropType } from 'react-native';
 import { MaskCanvas, MaskCanvasHandle } from './MaskCanvas';
+import { MenuBar } from '../components/chrome/MenuBar';
 import { eraseImage, removeBackground } from '../lib/deapi';
 
-const phosphorGlow = {
-  textShadowColor: textShadow.phosphor.color,
-  textShadowRadius: textShadow.phosphor.radius,
-  textShadowOffset: { width: 0, height: 0 },
-} as const;
-const PILL = { boxShadow: '0px 0px 4px 0px rgba(226,255,228,0.25)' } as const;
-
 const FIRST_TABS = ['MODE', 'BRUSH SIZE', 'REMOVE BACKGROUND'] as const;
-
-/** Pasek główny (3 zakładki) — fosforowe tło, zaznaczona = ciemna pigułka. */
-function FirstLevelBar({ index, focused, onPick }: { index: number; focused: boolean; onPick: (i: number) => void }) {
-  const txt = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size } as const;
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', alignSelf: 'stretch', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 2, backgroundColor: screen.olive.primary, ...(PILL as any) }}>
-      {FIRST_TABS.map((label, i) =>
-        i === index ? (
-          <Pressable key={label} onPress={() => onPick(i)} hitSlop={{ top: 16, bottom: 16, left: 6, right: 6 }} style={{ flexDirection: 'row', alignItems: 'center', gap: 3, paddingVertical: 3, paddingHorizontal: 3, borderRadius: 2, backgroundColor: color.dark21 }}>
-            <Text style={{ ...txt, color: screen.olive.primary, ...phosphorGlow }}>{'•'}</Text>
-            <Text style={{ ...txt, color: screen.olive.primary, ...phosphorGlow }}>{label}</Text>
-          </Pressable>
-        ) : (
-          <Pressable key={label} onPress={() => onPick(i)} hitSlop={{ top: 16, bottom: 16, left: 6, right: 6 }} style={{ paddingVertical: 3 }}>
-            <Text style={{ ...txt, color: color.dark21 }}>{label}</Text>
-          </Pressable>
-        ),
-      )}
-    </View>
-  );
-}
 
 export type MagicEraseState = { applied: boolean; hasSelection: boolean; removeBg: boolean; processing: boolean };
 export type MagicEraseHandle = {
@@ -112,7 +84,7 @@ export const MagicEraseStage = forwardRef<MagicEraseHandle, {
         onPaintStart={() => setApplied(false)}
         onInteractPanel={() => setLevel('second')}
       />
-      <FirstLevelBar index={first} focused={level === 'first'} onPick={(i) => { setFirst(i); setLevel(i === 2 ? 'first' : 'second'); }} />
+      <MenuBar items={FIRST_TABS} index={first} focused={level === 'first'} onPick={(i) => { setFirst(i); setLevel(i === 2 ? 'first' : 'second'); }} />
     </View>
   );
 });

@@ -12,6 +12,7 @@ import { Image as ExpoImage } from 'expo-image';
 import Svg, { Path, Defs, Mask, Rect, Image as SvgImage } from 'react-native-svg';
 import { color, font, screen, textShadow } from '../theme/tokens';
 import { hapticTick, hapticDetent } from '../lib/haptics';
+import { MenuBar } from '../components/chrome/MenuBar';
 
 const phosphorGlow = {
   textShadowColor: textShadow.phosphor.color,
@@ -37,32 +38,11 @@ function toPath(pts: Pt[]): string {
   return `M ${h.x} ${h.y} ` + (t.length ? t.map((p) => `L ${p.x} ${p.y}`).join(' ') : `L ${h.x} ${h.y}`);
 }
 
-/** Pod-pasek trybu zaznaczania (ADD/REMOVE) — zaznaczony = fosforowa pigułka z ciemnym tekstem. */
-function ModeBar({ index, focused, onPick }: { index: number; focused: boolean; onPick: (i: 0 | 1) => void }) {
-  const txt = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size } as const;
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', alignSelf: 'stretch', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 2 }}>
-      {SELECT_MODES.map((label, i) =>
-        i === index ? (
-          <Pressable key={label} onPress={() => onPick(i as 0 | 1)} hitSlop={{ top: 16, bottom: 16, left: 6, right: 6 }} style={{ flexDirection: 'row', alignItems: 'center', gap: 3, paddingVertical: 3, paddingHorizontal: 4, borderRadius: 2, backgroundColor: screen.olive.primary, ...(PILL as any) }}>
-            <Text style={{ ...txt, color: color.dark21 }}>{'•'}</Text>
-            <Text style={{ ...txt, color: color.dark21 }}>{label}</Text>
-          </Pressable>
-        ) : (
-          <Pressable key={label} onPress={() => onPick(i as 0 | 1)} hitSlop={{ top: 16, bottom: 16, left: 6, right: 6 }} style={{ paddingVertical: 3 }}>
-            <Text style={{ ...txt, color: screen.olive.primary, ...phosphorGlow }}>{label}</Text>
-          </Pressable>
-        ),
-      )}
-    </View>
-  );
-}
-
 /**
  * Pokrętło rozmiaru pędzla — STAŁA podziałka 1…20 (nie przesuwa się); bieżąca wartość = podświetlona,
  * wyższa kreska (znacznik). Przeciąganie w poziomie zmienia rozmiar; joystick ‹/› reguluje o 1.
  */
-function BrushDial({ size, focused, onSize }: { size: number; focused: boolean; onSize: (n: number) => void }) {
+function BrushDial({ size, onSize }: { size: number; onSize: (n: number) => void }) {
   const startRef = useRef(0);
   const lastRef = useRef(0);
   const sizeRef = useRef(size); sizeRef.current = size;
@@ -232,8 +212,8 @@ export const MaskCanvas = forwardRef<MaskCanvasHandle, {
         ) : null}
       </View>
 
-      {panel === 'mode' ? <ModeBar index={mode} focused={secondFocused} onPick={(i) => { onInteractPanel?.(); setMode(i); }} /> : null}
-      {panel === 'size' ? <BrushDial size={brush} focused={secondFocused} onSize={(n) => { onInteractPanel?.(); setBrush(n); }} /> : null}
+      {panel === 'mode' ? <MenuBar items={SELECT_MODES} index={mode} focused={secondFocused} onPick={(i) => { onInteractPanel?.(); setMode(i as 0 | 1); }} /> : null}
+      {panel === 'size' ? <BrushDial size={brush} onSize={(n) => { onInteractPanel?.(); setBrush(n); }} /> : null}
     </View>
   );
 });

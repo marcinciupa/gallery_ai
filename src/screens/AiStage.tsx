@@ -10,6 +10,7 @@ import { forwardRef, RefObject, useImperativeHandle, useRef, useState } from 're
 import { View, Text, Pressable, TextInput, ImageSourcePropType } from 'react-native';
 import { color, font, screen, textShadow } from '../theme/tokens';
 import { MaskCanvas, MaskCanvasHandle } from './MaskCanvas';
+import { MenuBar } from '../components/chrome/MenuBar';
 
 const phosphorGlow = {
   textShadowColor: textShadow.phosphor.color,
@@ -19,27 +20,6 @@ const phosphorGlow = {
 const PILL = { boxShadow: '0px 0px 4px 0px rgba(226,255,228,0.25)' } as const;
 
 const BRUSH_TABS = ['MODE', 'BRUSH SIZE'] as const;
-
-/** Pasek zakładek pędzla (MODE / BRUSH SIZE) — fosforowe tło, zaznaczona = ciemna pigułka. */
-function BrushTabs({ index, focused, onPick }: { index: number; focused: boolean; onPick: (i: number) => void }) {
-  const txt = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size } as const;
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', alignSelf: 'stretch', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 2, backgroundColor: screen.olive.primary, ...(PILL as any) }}>
-      {BRUSH_TABS.map((label, i) =>
-        i === index ? (
-          <Pressable key={label} onPress={() => onPick(i)} hitSlop={{ top: 16, bottom: 16, left: 6, right: 6 }} style={{ flexDirection: 'row', alignItems: 'center', gap: 3, paddingVertical: 3, paddingHorizontal: 3, borderRadius: 2, backgroundColor: color.dark21 }}>
-            <Text style={{ ...txt, color: screen.olive.primary, ...phosphorGlow }}>{'•'}</Text>
-            <Text style={{ ...txt, color: screen.olive.primary, ...phosphorGlow }}>{label}</Text>
-          </Pressable>
-        ) : (
-          <Pressable key={label} onPress={() => onPick(i)} hitSlop={{ top: 16, bottom: 16, left: 6, right: 6 }} style={{ paddingVertical: 3 }}>
-            <Text style={{ ...txt, color: color.dark21 }}>{label}</Text>
-          </Pressable>
-        ),
-      )}
-    </View>
-  );
-}
 
 export type AiStageHandle = {
   navLeft: () => void; navRight: () => void; navUp: () => void; navDown: () => void; press: () => void;
@@ -94,7 +74,7 @@ export const AiStage = forwardRef<AiStageHandle, {
         onPaintStart={() => setMasking(true)}
         onInteractPanel={() => setLevel('second')}
       />
-      {!typing ? <BrushTabs index={first} focused={level === 'first'} onPick={(i) => { setFirst(i); setLevel('second'); }} /> : null}
+      {!typing ? <MenuBar items={BRUSH_TABS} index={first} focused={level === 'first'} onPick={(i) => { setFirst(i); setLevel('second'); }} /> : null}
 
       {/* komunikat błędu */}
       {error ? (
