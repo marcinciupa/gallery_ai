@@ -46,6 +46,10 @@ for (const [name, val] of [['DEAPI_STEPS', EDIT_STEPS], ['DEAPI_FILL_STEPS', FIL
 }
 const FILL_MODEL = DEAPI_FILL_MODEL || DEAPI_MODEL;
 
+// UWAGA (auth deAPI): OpenAI-compat (oai.deapi.ai/v1) WYMAGA prefiksu `dpn-sk-` w kluczu — dlatego DEAPI_API_KEY
+// trzymamy Z prefiksem. Natywny REST v2 (api.deapi.ai) prefiksu NIE akceptuje; gdyby doszła trasa v2, klucz
+// trzeba tam podać jako `DEAPI_API_KEY.replace(/^dpn-sk-/i, '')`.
+
 // Klient OpenAI SDK wskazany na deAPI. `enhance_prompt`/`steps`/`seed` to rozszerzenia deAPI — SDK forwarduje
 // je jako pola formularza multipart (createForm iteruje po wszystkich kluczach body), więc przechodzą.
 const client = new OpenAI({
@@ -133,6 +137,50 @@ app.post('/api/v1/image-fills', upload.single('image'), async (req, res) => {
   } catch (e) {
     sendUpstreamError(res, e, 'image-fills');
   }
+});
+
+// REMOVE BACKGROUND — izoluje pierwszy plan na jednolitym białym tle. Realizowane przez tę samą (sprawdzoną,
+// synchroniczną) ścieżkę edycji co image-edits — deAPI ma dedykowany model RMBG (v2, async), ale edycja
+// promptem jest prostsza i pewna. Białe tło = przewidywalny, użyteczny wynik dla galerii.
+const REMOVE_BG_PROMPT =
+  'Completely remove the background and replace it with a plain solid white background. ' +
+  'Keep the main foreground subject perfectly intact and sharp, with clean natural edges. Do not alter the subject itself.';
+
+app.post('/api/v1/remove-background', upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'missing "image" file' });
+  try {
+    res.json(await runEdit(req.file.buffer, REMOVE_BG_PROMPT, FILL_MODEL, FILL_STEPS));
+  } catch (e) {
+    sendUpstreamError(res, e, 'remove-background');
+  }
+});
+
+// MAGIC ERASE — usuwa niechciane obiekty i naturalnie domalowuje tło. UWAGA: apka na razie NIE wysyła maski
+// (obszar zaznaczenia), więc erase jest ogólne (usuń zbędne obiekty pierwszego planu). Gdy dojdzie maska,
+// tu podłączymy inpaint z maską. Współdzieli ścieżkę edycji.
+const ERASE_PROMPT =
+  'Remove any unwanted foreground objects, people or distracting elements and seamlessly fill the area by ' +
+  'naturally extending the surrounding background. Keep the rest of the photo untouched, matching lighting, texture and perspective.';
+
+app.post('/api/v1/image-erase', upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'missing "image" file' });
+  try {
+    res.json(await runEdit(req.file.buffer, ERASE_PROMPT, DEAPI_MODEL, EDIT_STEPS));
+  } catch (e) {
+    sendUpstreamError(res, e, 'image-erase');
+  }
+});
+
+// PROMPT BOOSTER — passthrough (zwraca prompt bez zmian). ŚWIADOMA DECYZJA:
+// deAPI v2 `prompts/enhancements` z `type=images.generations` DZIAŁA (auth OK po odcięciu prefiksu dpn-sk-),
+// ale jest pod text-to-image i ZMYŚLA całe sceny (np. „make it sunset" → opis nagiej postaci) — dla EDYCJI
+// istniejącego zdjęcia to wstrzykuje niechciane treści. `type=images.edits` byłby właściwy, ale wymaga
+// obrazu źródłowego (img2img), którego apka przy boost nie wysyła. Realne, kontekstowe podbicie promptu i tak
+// robi się przy edycji (`enhance_prompt=1` w runEdit, z obrazem w kontekście), więc echo tutaj jest bezpieczne.
+app.post('/api/v1/prompt-boost', express.json(), (req, res) => {
+  const prompt = String(req.body?.prompt ?? '').trim();
+  if (!prompt) return res.status(400).json({ error: 'missing "prompt" field' });
+  res.json({ prompt });
 });
 
 // 404 w formacie JSON (apka nigdy nie dostaje HTML-a Expressa)

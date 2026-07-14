@@ -42,7 +42,7 @@ curl -X POST http://localhost:8787/api/v1/image-edits \
 
 | Zmienna | Domyślnie | Opis |
 |---|---|---|
-| `DEAPI_API_KEY` | — | **wymagane**. Klucz deAPI w formacie `<id>\|<token>` (np. `13660\|…`). Wklej 1:1 z panelu deAPI — **bez żadnego prefiksu**. |
+| `DEAPI_API_KEY` | — | **wymagane**. Klucz deAPI `<id>\|<token>` **z prefiksem `dpn-sk-`** (np. `dpn-sk-13660\|…`). Prefiks wymagany przez OpenAI-compat (wszystkie trasy edycji). |
 | `DEAPI_BASE_URL` | `https://oai.deapi.ai/v1` | endpoint OpenAI-compatible |
 | `DEAPI_MODEL` | `Flux_2_Klein_4B_BF16` | model edycji |
 | `DEAPI_STEPS` | `4` | kroki (Flux.2 Klein = distilled) |
