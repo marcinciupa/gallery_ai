@@ -81,7 +81,8 @@ export async function removeBackground({ uri }: { uri: string }): Promise<ImageE
     await sleep(1400);
     return { uri };
   }
-  return postImage('/api/v1/remove-background', uri);
+  // Model tła (Ben2) też ma limit rozdzielczości wejścia (duże zdjęcia z telefonu dostają 422) → cap 1536 px.
+  return postImage('/api/v1/remove-background', uri, {}, undefined, 1536);
 }
 
 /**
@@ -93,7 +94,9 @@ export async function upscaleImage({ uri }: { uri: string }): Promise<ImageEditR
     await sleep(1400);
     return { uri };
   }
-  return postImage('/api/v1/upscale', uri);
+  // deAPI upscale (x4) ma limit rozdzielczości wejścia — duże zdjęcia z telefonu (np. 2000×2800) dostają 422.
+  // Cap dłuższego boku na 1536 px (wyjście x4 = do 6144 px, aż nadto). Bez tego upscale realnych zdjęć padał.
+  return postImage('/api/v1/upscale', uri, {}, undefined, 1536);
 }
 
 export type PromptBoostResult = { prompt: string };
@@ -162,11 +165,12 @@ async function postImage(
   uri: string,
   fields: Record<string, string> = {},
   extraImages?: Record<string, string>,
+  maxDim?: number, // cap dłuższego boku (px) — dla upscalu, który ma limit rozdzielczości wejścia
 ): Promise<ImageEditResult> {
   // zdalny wynik (https/data) najpierw sprowadzamy do lokalnego pliku (inaczej łańcuchowa edycja wysyłałaby
-  // pusty obraz), a potem WYPALAMY orientację EXIF w piksele — backend ignoruje EXIF, więc bez tego zwraca
-  // obrócony/odwrócony wynik (np. remove-background).
-  const localUri = await bakeOrientation(await ensureLocalFile(uri));
+  // pusty obraz), a potem WYPALAMY orientację EXIF w piksele (+ ewentualny cap rozdzielczości) — backend
+  // ignoruje EXIF, więc bez tego zwraca obrócony/odwrócony wynik (np. remove-background).
+  const localUri = await bakeOrientation(await ensureLocalFile(uri), maxDim);
   const url = `${BASE}${path}`;
 
   // WEB: brak natywnego uploadAsync — użyj fetch+FormData (web to tylko podgląd UI, nie ścieżka produkcyjna AI).

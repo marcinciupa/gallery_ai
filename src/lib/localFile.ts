@@ -61,11 +61,19 @@ export async function ensureLocalFile(uri: string): Promise<string> {
  * z uwzględnieniem EXIF i zapisuje „prosto", bez flagi orientacji. Dzięki temu backend (który ignoruje EXIF)
  * dostaje już poprawnie zorientowane piksele i nie zwraca obróconego/odwróconego wyniku (np. remove-background).
  * PNG (bezstratnie — brak degradacji przy edycji łańcuchowej). Błąd → oryginał (nie blokujemy wysyłki).
+ *
+ * `maxDim` (opcjonalnie) — cap dłuższego boku w px. Potrzebne dla upscalu: deAPI (RealESRGAN x4 = 16× pikseli)
+ * odrzuca za dużą rozdzielczość wejścia (422 „invalid image dimensions"), więc duże zdjęcia zmniejszamy.
  */
-export async function bakeOrientation(uri: string): Promise<string> {
+export async function bakeOrientation(uri: string, maxDim?: number): Promise<string> {
   try {
     const r = await ImageManipulator.manipulateAsync(uri, [], { format: ImageManipulator.SaveFormat.PNG });
-    return r.uri;
+    const longest = Math.max(r.width, r.height);
+    if (!maxDim || longest <= maxDim) return r.uri;
+    // zmniejsz proporcjonalnie: ustawiamy tylko dłuższy bok = maxDim, manipulator dobiera drugi z zachowaniem proporcji
+    const resize = r.width >= r.height ? { width: maxDim } : { height: maxDim };
+    const capped = await ImageManipulator.manipulateAsync(r.uri, [{ resize }], { format: ImageManipulator.SaveFormat.PNG });
+    return capped.uri;
   } catch {
     return uri;
   }
