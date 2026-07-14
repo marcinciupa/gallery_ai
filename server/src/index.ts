@@ -64,7 +64,9 @@ const PUB_URL = (PUBLIC_URL || (RAILWAY_PUBLIC_DOMAIN ? `https://${RAILWAY_PUBLI
 const WEBHOOKS_ON = Boolean(PUB_URL && DEAPI_WEBHOOK_SECRET); // bez publicznego URL (np. lokalnie) → sam polling
 
 const POLL_INTERVAL_MS = 2500;
-const RESULT_TIMEOUT_MS = 85_000; // < 90 s timeoutu apki (uploadAsync) — chcemy oddać błąd zanim apka sама odetnie
+const OVERALL_TIMEOUT_MS = 75_000;    // całkowity budżet proxy (submit + czekanie) — < 90 s timeoutu apki, z zapasem na upload legs
+const SUBMIT_TIMEOUT_MS = 30_000;     // górny limit na sam submit (upload obrazu do deAPI v2)
+const POLL_FETCH_TIMEOUT_MS = 10_000; // pojedynczy GET /jobs — krótki, żeby zawieszony poll nie blokował pętli deadline
 
 const app = express();
 app.disable('x-powered-by');
@@ -89,16 +91,19 @@ app.post('/webhooks/deapi', express.raw({ type: '*/*', limit: '2mb' }), (req, re
   const sig = req.header('X-DeAPI-Signature') ?? '';
   const ts = req.header('X-DeAPI-Timestamp') ?? '';
 
-  // replay-protection: odrzuć starsze niż 5 min
-  const tsNum = Number(ts);
-  if (!Number.isFinite(tsNum) || Math.abs(Date.now() / 1000 - tsNum) > 300) {
+  // replay-protection: odrzuć starsze niż 5 min. Tolerujemy sekundy LUB milisekundy (deAPI mógłby wysłać ms).
+  let tsSec = Number(ts);
+  if (Number.isFinite(tsSec) && tsSec > 1e12) tsSec = tsSec / 1000;
+  if (!Number.isFinite(tsSec) || Math.abs(Date.now() / 1000 - tsSec) > 300) {
+    console.warn('[webhook] odrzucony: zły/nieaktualny timestamp');
     return res.status(400).json({ error: 'stale or bad timestamp' });
   }
-  // weryfikacja podpisu (stałoczasowa)
-  const expected = 'sha256=' + createHmac('sha256', DEAPI_WEBHOOK_SECRET).update(`${ts}.${raw.toString('utf8')}`).digest('hex');
+  // weryfikacja podpisu (stałoczasowa), liczona na SUROWYCH bajtach: HMAC(secret, ts + "." + raw_body)
+  const mac = createHmac('sha256', DEAPI_WEBHOOK_SECRET).update(Buffer.concat([Buffer.from(`${ts}.`, 'utf8'), raw])).digest('hex');
   const a = Buffer.from(sig);
-  const b = Buffer.from(expected);
+  const b = Buffer.from(`sha256=${mac}`);
   if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    console.warn('[webhook] odrzucony: zły podpis');
     return res.status(401).json({ error: 'bad signature' });
   }
 
@@ -134,8 +139,8 @@ app.get('/health', (_req, res) =>
 // deAPI v2 — submit + oczekiwanie na wynik (webhook lub polling)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Wysyła job do deAPI v2 (multipart: obraz + pola). Zwraca `request_id`. */
-async function submitJob(kind: string, image: Buffer, fields: Record<string, string>): Promise<string> {
+/** Wysyła job do deAPI v2 (multipart: obraz + pola). Zwraca `request_id`. Fetch ograniczony do budżetu (abort). */
+async function submitJob(kind: string, image: Buffer, fields: Record<string, string>, deadline: number): Promise<string> {
   const form = new FormData();
   form.append('image', new Blob([image as unknown as BlobPart], { type: 'image/png' }), 'image.png');
   for (const [k, v] of Object.entries(fields)) form.append(k, v);
@@ -143,7 +148,15 @@ async function submitJob(kind: string, image: Buffer, fields: Record<string, str
     form.append('webhook_url', `${PUB_URL}/webhooks/deapi`);
     form.append('webhook_secret', DEAPI_WEBHOOK_SECRET!);
   }
-  const r = await fetch(`${V2_BASE}/api/v2/images/${kind}`, { method: 'POST', headers: V2_AUTH, body: form });
+  const budget = Math.max(1000, Math.min(SUBMIT_TIMEOUT_MS, deadline - Date.now()));
+  let r: Response;
+  try {
+    r = await fetch(`${V2_BASE}/api/v2/images/${kind}`, { method: 'POST', headers: V2_AUTH, body: form, signal: AbortSignal.timeout(budget) });
+  } catch (e) {
+    const name = (e as { name?: string })?.name;
+    if (name === 'TimeoutError' || name === 'AbortError') throw Object.assign(new Error(`submit ${kind} timeout`), { status: 504 });
+    throw e; // inny błąd sieci → 502
+  }
   if (!r.ok) {
     const body = await r.text().catch(() => '');
     throw Object.assign(new Error(`submit ${kind} ${r.status}: ${body.slice(0, 300)}`), { status: r.status });
@@ -154,19 +167,23 @@ async function submitJob(kind: string, image: Buffer, fields: Record<string, str
   return id;
 }
 
-/** Odpytuje status joba. Zwraca URL wyniku (status=done), null (jeszcze nie gotowe) lub rzuca (status=error). */
+/** Odpytuje status joba (fetch z krótkim abortem). URL wyniku (done), null (nie gotowe/przejściowy błąd) lub rzuca (error). */
 async function pollJob(id: string): Promise<string | null> {
-  const r = await fetch(`${V2_BASE}/api/v2/jobs/${id}`, { headers: V2_AUTH });
-  if (!r.ok) return null; // przejściowy błąd odczytu — czekamy dalej (webhook może i tak dojść)
-  const d = ((await r.json()) as { data?: any })?.data ?? {};
+  let r: Response;
+  try {
+    r = await fetch(`${V2_BASE}/api/v2/jobs/${id}`, { headers: V2_AUTH, signal: AbortSignal.timeout(POLL_FETCH_TIMEOUT_MS) });
+  } catch {
+    return null; // abort/błąd sieci — przejściowo; pętla i tak pilnuje deadline'u
+  }
+  if (!r.ok) return null;
+  const d = ((await r.json().catch(() => ({}))) as { data?: any })?.data ?? {};
   if (d.status === 'done' && d.result_url) return String(d.result_url);
   if (d.status === 'error') throw Object.assign(new Error(String(d.error_message ?? 'deAPI job error')), { status: 502 });
   return null;
 }
 
-/** Czeka na wynik joba: webhook (szybko) LUB polling (fallback), do RESULT_TIMEOUT_MS. Zwraca URL wyniku. */
-async function awaitResult(id: string): Promise<string> {
-  const deadline = Date.now() + RESULT_TIMEOUT_MS;
+/** Czeka na wynik joba: webhook (szybko) LUB polling (fallback), do `deadline`. Zwraca URL wyniku. */
+async function awaitResult(id: string, deadline: number): Promise<string> {
   let onDone!: (u: string) => void;
   let onFail!: (e: Error) => void;
   const viaWebhook = new Promise<string>((resolve, reject) => { onDone = resolve; onFail = reject; });
@@ -186,10 +203,17 @@ async function awaitResult(id: string): Promise<string> {
   }
 }
 
+/** submit + oczekiwanie na wynik pod JEDNYM budżetem czasu (obejmuje upload legs + czekanie). Zwraca URL wyniku. */
+async function runJob(kind: string, image: Buffer, fields: Record<string, string>): Promise<string> {
+  const deadline = Date.now() + OVERALL_TIMEOUT_MS;
+  const id = await submitJob(kind, image, fields, deadline);
+  return awaitResult(id, deadline);
+}
+
 /** Skrót: edycja img2img promptem. deAPI v2 `edits` wymaga `seed` — losujemy per żądanie (różnorodność wyników). */
 function runEdit(image: Buffer, prompt: string): Promise<string> {
   const seed = String(Math.floor(Math.random() * 1_000_000_000));
-  return submitJob('edits', image, { prompt, model: DEAPI_MODEL, steps: String(EDIT_STEPS), seed }).then(awaitResult);
+  return runJob('edits', image, { prompt, model: DEAPI_MODEL, steps: String(EDIT_STEPS), seed });
 }
 
 /** Błąd wywołania deAPI → apce oddajemy 502 (lub 504 timeout) z ogólnym komunikatem; detal tylko do logów. */
@@ -231,8 +255,7 @@ app.post('/api/v1/image-fills', upload.single('image'), async (req, res) => {
 app.post('/api/v1/remove-background', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'missing "image" file' });
   try {
-    const uri = await submitJob('background-removals', req.file.buffer, { model: DEAPI_BG_MODEL }).then(awaitResult);
-    res.json({ uri });
+    res.json({ uri: await runJob('background-removals', req.file.buffer, { model: DEAPI_BG_MODEL }) });
   } catch (e) {
     sendUpstreamError(res, e, 'remove-background');
   }
