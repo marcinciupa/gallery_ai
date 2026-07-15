@@ -220,8 +220,17 @@ function runEdit(image: Buffer, prompt: string): Promise<string> {
 /** Błąd wywołania deAPI → apce oddajemy 502 (lub 504 timeout) z ogólnym komunikatem; detal tylko do logów. */
 function sendUpstreamError(res: express.Response, e: unknown, where: string) {
   const err = e as { status?: number; message?: string };
-  const code = err?.status === 504 ? 504 : 502;
-  console.error(`[${where}] upstream ${err?.status ?? '?'}:`, err?.message ?? e);
+  const status = err?.status;
+  console.error(`[${where}] upstream ${status ?? '?'}:`, err?.message ?? e);
+
+  // 422 = deAPI ODRZUCIŁO wejście (najczęściej rozdzielczość poza limitem modelu, np. bok < 256 lub skrajne
+  // proporcje panoramy). Błąd NIEPRZEJŚCIOWY — ponawianie nic nie da. Nie maskujemy go jako 502 „upstream
+  // failed" (co sugeruje przejściowy problem serwera); przekazujemy 422 z komunikatem, który apka pokaże
+  // użytkownikowi (EditorScreen renderuje `ERROR: <message>`), żeby wiedział, że to kwestia samego zdjęcia.
+  if (status === 422) {
+    return res.status(422).json({ error: 'AI could not process this photo (unsupported dimensions) — try a different one' });
+  }
+  const code = status === 504 ? 504 : 502;
   res.status(code).json({ error: code === 504 ? `${where} timed out` : `${where} failed (upstream)` });
 }
 

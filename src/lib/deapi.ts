@@ -14,6 +14,12 @@ const BASE = (process.env.EXPO_PUBLIC_API_URL || '').replace(/\/+$/, '');
 const APP_KEY = process.env.EXPO_PUBLIC_APP_KEY;
 const appKeyHeader: Record<string, string> = APP_KEY ? { 'X-App-Key': APP_KEY } : {};
 
+// Cap dłuższego boku wysyłanego obrazu (px). deAPI odrzuca za dużą rozdzielczość (422 „invalid image dimensions"),
+// a zdjęcia z telefonu (3000–4000 px) daleko przekraczają limity modeli. Limity per model (bok):
+//   • edycja/fill/erase (Flux_2_Klein) = 256–1536   • upscale (RealESRGAN_x4) = 128–2048   • tło (Ben2) = 128–2048
+// 1536 to wspólny bezpieczny mianownik dla WSZYSTKICH tras (mieści się w każdym limicie) → jeden cap wszędzie.
+const AI_MAX_DIM = 1536;
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -43,7 +49,8 @@ export async function editImage({ uri, prompt }: { uri: string; prompt: string }
 
   // REALNY proxy: multipart (obraz + prompt) → backend forwarduje do deAPI i zwraca wynik.
   // Model wybiera backend (np. z-image albo Qwen Edit Plus — oba dostępne w deAPI).
-  return postImage('/api/v1/image-edits', uri, { prompt });
+  // Cap 1536: Flux (model edycji) odrzuca wejście > 1536 px (422) — bez capa edycja realnych zdjęć padała.
+  return postImage('/api/v1/image-edits', uri, { prompt }, undefined, AI_MAX_DIM);
 }
 
 /**
@@ -56,7 +63,7 @@ export async function fillImage({ uri }: { uri: string }): Promise<ImageEditResu
     await sleep(1400);
     return { uri };
   }
-  return postImage('/api/v1/image-fills', uri);
+  return postImage('/api/v1/image-fills', uri, {}, undefined, AI_MAX_DIM); // Flux (edycja) → cap 1536, inaczej 422
 }
 
 /**
@@ -69,7 +76,7 @@ export async function eraseImage({ uri, mask }: { uri: string; mask?: string }):
     await sleep(1400);
     return { uri };
   }
-  return postImage('/api/v1/image-erase', uri, {}, mask ? { mask } : undefined);
+  return postImage('/api/v1/image-erase', uri, {}, mask ? { mask } : undefined, AI_MAX_DIM); // Flux (edycja) → cap 1536
 }
 
 /**
@@ -81,8 +88,8 @@ export async function removeBackground({ uri }: { uri: string }): Promise<ImageE
     await sleep(1400);
     return { uri };
   }
-  // Model tła (Ben2) też ma limit rozdzielczości wejścia (duże zdjęcia z telefonu dostają 422) → cap 1536 px.
-  return postImage('/api/v1/remove-background', uri, {}, undefined, 1536);
+  // Model tła (Ben2) też ma limit rozdzielczości wejścia (duże zdjęcia z telefonu dostają 422) → cap.
+  return postImage('/api/v1/remove-background', uri, {}, undefined, AI_MAX_DIM);
 }
 
 /**
@@ -95,8 +102,8 @@ export async function upscaleImage({ uri }: { uri: string }): Promise<ImageEditR
     return { uri };
   }
   // deAPI upscale (x4) ma limit rozdzielczości wejścia — duże zdjęcia z telefonu (np. 2000×2800) dostają 422.
-  // Cap dłuższego boku na 1536 px (wyjście x4 = do 6144 px, aż nadto). Bez tego upscale realnych zdjęć padał.
-  return postImage('/api/v1/upscale', uri, {}, undefined, 1536);
+  // Cap dłuższego boku (wyjście x4 = do 6144 px, aż nadto). Bez tego upscale realnych zdjęć padał.
+  return postImage('/api/v1/upscale', uri, {}, undefined, AI_MAX_DIM);
 }
 
 export type PromptBoostResult = { prompt: string };
