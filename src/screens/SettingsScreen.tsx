@@ -152,7 +152,7 @@ const INITIAL_SECTIONS: SectionData[] = [
     header: 'VIEWER',
     items: [
       // tryb wyświetlania treści (§11b.1) — steruje filtrem miniatur/zdjęć w galerii
-      { label: 'SCREEN', options: ['IMMERSIVE', 'RETRO', 'CLEAN'], value: 0 },
+      { label: 'SCREEN', options: ['IMMERSIVE', 'RETRO', 'CLEAN'], value: 1 }, // DOMYŚLNIE RETRO
     ],
   },
   {
