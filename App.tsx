@@ -185,8 +185,8 @@ function AppInner() {
           // pinch na OBUDOWIE → device/fullscreen
           onPinch={(dir) => settings.setFullscreen(dir === 'out')}
           // pinch na EKRANIE → liczba kolumn; swipe lewo/prawo → cykl efektu miniatur (pętla). Tylko w GALLERY.
-          onScreenPinch={(dir) => { if (mode === 'GALLERY' && !gallery.viewerOpen && !gallery.menuOpen) gallery.pinchColumns(dir); }}
-          onScreenSwipe={(dir) => { if (mode === 'GALLERY' && !gallery.viewerOpen) { settings.cycleScreenMode(dir === 'left' ? 1 : -1); gallery.showModeToast(); } }}
+          onScreenPinch={(dir) => { if (mode === 'GALLERY' && !gallery.viewerOpen && !gallery.menuOpen && !gallery.selectMode) gallery.pinchColumns(dir); }}
+          onScreenSwipe={(dir) => { if (mode === 'GALLERY' && !gallery.viewerOpen && !gallery.selectMode) { settings.cycleScreenMode(dir === 'left' ? 1 : -1); gallery.showModeToast(); } }}
           diag={settings.diag}
         >
           {base.content}

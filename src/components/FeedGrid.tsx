@@ -7,10 +7,10 @@
  * (Pakowanie/filtr to tania arytmetyka O(N); ciężką rzeczą jest mount Views, który okno ogranicza.)
  */
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Pressable, ScrollView, ImageSourcePropType, LayoutChangeEvent, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
+import { View, Text, Pressable, ScrollView, ImageSourcePropType, LayoutChangeEvent, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import Svg, { Polygon } from 'react-native-svg';
-import { color, screen } from '../theme/tokens';
+import { color, font, screen } from '../theme/tokens';
 
 export const FEED_GAP = 8;
 
@@ -49,14 +49,14 @@ export function packFeed(spans: number[], cols: number): { pos: { r: number; c: 
 }
 
 const FeedTile = memo(function FeedTile({
-  source, x, y, size, selected, images, onOpen, onCycle,
+  source, x, y, size, selected, images, onOpen, onCycle, onLongPress, selectMode, check,
 }: {
   source?: ImageSourcePropType; x: number; y: number; size: number; selected?: boolean; images?: boolean;
-  onOpen?: () => void; onCycle?: () => void;
+  onOpen?: () => void; onCycle?: () => void; onLongPress?: () => void; selectMode?: boolean; check?: boolean | null;
 }) {
   const overlay = { position: 'absolute' as const, top: 0, left: 0, right: 0, bottom: 0, borderRadius: 2 };
   return (
-    <Pressable onPress={onOpen} style={{ position: 'absolute', left: x, top: y, width: size, height: size }}>
+    <Pressable onPress={onOpen} onLongPress={onLongPress} delayLongPress={350} style={{ position: 'absolute', left: x, top: y, width: size, height: size }}>
       <View style={{ flex: 1, borderRadius: 2, overflow: 'hidden' }}>
         {images && source ? (
           <ExpoImage source={source} contentFit="cover" cachePolicy="memory-disk" style={{ width: '100%', height: '100%' }} />
@@ -69,20 +69,28 @@ const FeedTile = memo(function FeedTile({
           {/* podwójna ramka: czarna 3px pod, fosforowa 2px na wierzchu (jak PhosphorCover) */}
           <View pointerEvents="none" style={{ ...overlay, borderWidth: 3, borderColor: color.dark1A }} />
           <View pointerEvents="none" style={{ ...overlay, borderWidth: 2, borderColor: screen.olive.primary }} />
-          {/* uchwyt zmiany rozmiaru — trójkąt w prawym-dolnym rogu */}
-          <Pressable onPress={onCycle} hitSlop={8} style={{ position: 'absolute', right: 3, bottom: 3, padding: 3 }}>
-            <Svg width={12} height={12}>
-              <Polygon points="0,12 12,0 12,12" fill={screen.olive.primary} />
-            </Svg>
-          </Pressable>
+          {/* uchwyt zmiany rozmiaru — trójkąt w prawym-dolnym rogu (ukryty w trybie zaznaczania) */}
+          {!selectMode ? (
+            <Pressable onPress={onCycle} hitSlop={8} style={{ position: 'absolute', right: 3, bottom: 3, padding: 3 }}>
+              <Svg width={12} height={12}>
+                <Polygon points="0,12 12,0 12,12" fill={screen.olive.primary} />
+              </Svg>
+            </Pressable>
+          ) : null}
         </>
+      ) : null}
+      {/* checkbox trybu zaznaczania — lewy-górny róg */}
+      {check != null ? (
+        <View pointerEvents="none" style={{ position: 'absolute', top: 6, left: 6, width: 18, height: 18, borderRadius: 3, borderWidth: 2, borderColor: screen.olive.primary, backgroundColor: check ? screen.olive.primary : 'rgba(26,26,26,0.45)', alignItems: 'center', justifyContent: 'center' }}>
+          {check ? <Text style={{ fontFamily: font.monoBody.family, fontSize: 12, lineHeight: 13, color: color.dark21 }}>{'✓'}</Text> : null}
+        </View>
       ) : null}
     </Pressable>
   );
 });
 
 export const FeedGrid = memo(function FeedGrid({
-  data, cols, width, spans, selected, images = true, onCycleSpan, onOpen, onSelectAt,
+  data, cols, width, spans, selected, images = true, onCycleSpan, onOpen, onSelectAt, onScrollActive, selectMode, checkedAt, onLongPressAt,
 }: {
   data: ImageSourcePropType[];
   cols: number;
@@ -93,6 +101,10 @@ export const FeedGrid = memo(function FeedGrid({
   onCycleSpan: (i: number) => void;
   onOpen: (i: number) => void;
   onSelectAt?: (i: number) => void; // przy swipie kursor podąża za scrollem (kafel w środku pionowym; 3 kol.→środek, 2 kol.→lewa)
+  onScrollActive?: (active: boolean) => void; // trwa swipe → chowaj kursor (true na start, false po zatrzymaniu)
+  selectMode?: boolean;                       // tryb zaznaczania → checkbox zamiast uchwytu, tap = toggle
+  checkedAt?: (i: number) => boolean;         // czy kafel i jest zaznaczony
+  onLongPressAt?: (i: number) => void;        // long-press → wejście w tryb zaznaczania (z tym kaflem)
 }) {
   // Geometria 1:1 z gallery view: kolumna = width/cols (pitch), kafel 1× = kolumna − gap, margines zewn. = gap/2
   // (odpowiednik `padding: gap/2` na kaflach FlatListy). Dzięki temu feed ma tę samą szerokość i marginesy.
@@ -119,6 +131,7 @@ export const FeedGrid = memo(function FeedGrid({
   const lastY = useRef(0);
   const userScrolling = useRef(false);          // trwa swipe/momentum → auto-scroll wyłączony (nie walczy ze swipem)
   const scrollStopT = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSel = useRef<number | null>(null); // kafel pod środkiem — ustawiany w `selected` DOPIERO po zatrzymaniu
 
   const setWindow = (y: number, vh: number) => {
     const buf = step * 2;
@@ -126,19 +139,26 @@ export const FeedGrid = memo(function FeedGrid({
   };
   // userScrolling ustawiamy TYLKO z realnego drag (onScrollBeginDrag) — programowy scrollTo (auto-scroll joysticka)
   // też odpala onScroll, ale NIE onScrollBeginDrag, więc nie blokuje wtedy auto-scrollu ani nie „podąża".
-  const onScrollBeginDrag = () => { userScrolling.current = true; if (scrollStopT.current) clearTimeout(scrollStopT.current); };
+  const onScrollBeginDrag = () => { userScrolling.current = true; onScrollActive?.(true); if (scrollStopT.current) clearTimeout(scrollStopT.current); };
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y;
     if (Math.abs(y - lastY.current) >= step) { lastY.current = y; setWindow(y, viewH); } // przelicz okno raz na wiersz
     if (!userScrolling.current) return; // scroll programowy → tylko okno wirtualizacji; bez podążania i blokady
     if (scrollStopT.current) clearTimeout(scrollStopT.current); // reset flagi po chwili ciszy (koniec swipe+momentum)
-    scrollStopT.current = setTimeout(() => { userScrolling.current = false; }, 160);
-    // kursor PODĄŻA za swipem: kafel pod środkiem pionowym; kolumna = 3 kol.→środek (1), 2 kol.→lewa (0)
+    // PERF: kursor jest schowany podczas swipe (onScrollActive), więc NIE wołamy setSelected na każde zdarzenie
+    // scrolla (to re-renderowało cały GalleryScreen ~30×/s = okresowe spadki fps). Zapamiętujemy kafel pod środkiem
+    // i ustawiamy `selected` RAZ, po zatrzymaniu — dokładnie gdy kursor wraca.
     if (onSelectAt && viewH > 0) {
       const r = Math.max(0, Math.floor((y + viewH / 2 - inset) / step));
       const idx = cellGrid[r]?.[cols === 3 ? 1 : 0];
-      if (idx != null && idx !== selected) onSelectAt(idx);
+      if (idx != null) pendingSel.current = idx;
     }
+    scrollStopT.current = setTimeout(() => {
+      userScrolling.current = false;
+      onScrollActive?.(false);
+      if (pendingSel.current != null && pendingSel.current !== selected) onSelectAt?.(pendingSel.current);
+      pendingSel.current = null;
+    }, 160);
   };
   const onLayout = (e: LayoutChangeEvent) => { const h = e.nativeEvent.layout.height; setViewH(h); setWindow(lastY.current, h); };
 
@@ -182,10 +202,13 @@ export const FeedGrid = memo(function FeedGrid({
               x={p.c * step + inset}
               y={y}
               size={size}
-              selected={i === selected}
+              selected={i === selected || (!!selectMode && !!checkedAt?.(i))}
               images={images}
               onOpen={() => onOpen(i)}
               onCycle={() => onCycleSpan(i)}
+              onLongPress={onLongPressAt ? () => onLongPressAt(i) : undefined}
+              selectMode={selectMode}
+              check={selectMode ? !!checkedAt?.(i) : undefined}
             />
           );
         })}

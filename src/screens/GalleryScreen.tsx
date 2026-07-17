@@ -13,6 +13,7 @@ import { View, Text, Pressable, Platform, FlatList, LayoutChangeEvent, ImageSour
 import { Image as ExpoImage } from 'expo-image';
 import { color, font, screen, textShadow } from '../theme/tokens';
 import type { KeyboardConfig } from '../components/chrome/Keyboard';
+import { MenuBar } from '../components/chrome/MenuBar';
 import { ScreenTopBar, Mode, DisplayMode } from './ScreenChrome';
 import { useMedia } from '../hooks/useMedia';
 import { applyLibraryFilter } from '../hooks/useLibraryFilter';
@@ -69,7 +70,17 @@ function usePhotoAi(source?: ImageSourcePropType): boolean {
   return !!(source as any)?.ai;
 }
 
-function PhosphorCover({ source, size, selected, images = true, ai: aiProp, badges = true }: { source?: ImageSourcePropType; size: number; selected?: boolean; images?: boolean; ai?: boolean; badges?: boolean }) {
+// Checkbox trybu zaznaczania (Figma 460:2831) — kwadracik w LEWYM-górnym rogu (badge'y RAW/AI są w prawym).
+// Zaznaczony = wypełniony fosforem z „✓"; niezaznaczony = pusta ramka na półprzezroczystym tle (czytelny nad zdjęciem).
+function TileCheck({ on }: { on: boolean }) {
+  return (
+    <View pointerEvents="none" style={{ position: 'absolute', top: 6, left: 6, width: 18, height: 18, borderRadius: 3, borderWidth: 2, borderColor: screen.olive.primary, backgroundColor: on ? screen.olive.primary : 'rgba(26,26,26,0.45)', alignItems: 'center', justifyContent: 'center' }}>
+      {on ? <Text style={{ fontFamily: font.monoBody.family, fontSize: 12, lineHeight: 13, color: color.dark21 }}>{'✓'}</Text> : null}
+    </View>
+  );
+}
+
+function PhosphorCover({ source, size, selected, images = true, ai: aiProp, badges = true, check, danger }: { source?: ImageSourcePropType; size: number; selected?: boolean; images?: boolean; ai?: boolean; badges?: boolean; check?: boolean | null; danger?: boolean }) {
   const raw = !!(source as any)?.raw; // flaga RAW doklejona do źródła (useMedia)
   const ai = aiProp ?? !!(source as any)?.ai;
   // Zaznaczenie = PODWÓJNY obrys (fig 337:6150 strokes=[#E2FFE4,#1A1A1A]) — OBIE ramki WEWNĘTRZNE (inset na tej
@@ -88,10 +99,11 @@ function PhosphorCover({ source, size, selected, images = true, ai: aiProp, badg
       {selected ? (
         <>
           <View pointerEvents="none" style={{ ...overlay, borderWidth: 3, borderColor: color.dark1A }} />
-          <View pointerEvents="none" style={{ ...overlay, borderWidth: 2, borderColor: screen.olive.primary }} />
+          <View pointerEvents="none" style={{ ...overlay, borderWidth: 2, borderColor: danger ? screen.red.primary : screen.olive.primary }} />
         </>
       ) : null}
       {badges && images && source ? <ThumbBadges ai={ai} raw={raw} /> : null}
+      {check != null ? <TileCheck on={check} /> : null}
     </View>
   );
 }
@@ -115,13 +127,16 @@ function ScreenFilter({ displayMode }: { displayMode: DisplayMode }) {
   );
 }
 
-const FolderTile = memo(function FolderTile({ folder, size, selected, images, onPress }: { folder: Folder; size: number; selected?: boolean; images?: boolean; onPress?: () => void }) {
-  // wg projektu: nazwa = Mono/Label (bold 12), podkreślona gdy zaznaczona; licznik = Mono/Caption (10)
-  const name = { fontFamily: font.monoLabel.family, fontSize: font.monoLabel.size, color: screen.olive.primary, ...phosphorGlow } as const;
-  const cap = { fontFamily: font.monoCaption.family, fontSize: font.monoCaption.size, color: screen.olive.primary, ...phosphorGlow } as const;
+const FolderTile = memo(function FolderTile({ folder, size, selected, images, onPress, onLongPress, check, danger }: { folder: Folder; size: number; selected?: boolean; images?: boolean; onPress?: () => void; onLongPress?: () => void; check?: boolean | null; danger?: boolean }) {
+  // wg projektu: nazwa = Mono/Label (bold 12), podkreślona gdy zaznaczona; licznik = Mono/Caption (10).
+  // KOSZ (danger) = czerwony label/licznik + czerwony glow, żeby wyróżniał się od zwykłych folderów.
+  const glow = danger ? { textShadowColor: screen.red.primary, textShadowRadius: textShadow.phosphor.radius, textShadowOffset: { width: 0, height: 0 } } : phosphorGlow;
+  const fg = danger ? screen.red.primary : screen.olive.primary;
+  const name = { fontFamily: font.monoLabel.family, fontSize: font.monoLabel.size, color: fg, ...glow } as const;
+  const cap = { fontFamily: font.monoCaption.family, fontSize: font.monoCaption.size, color: fg, ...glow } as const;
   return (
-    <Pressable onPress={onPress} style={{ width: '100%', gap: 8 }}>
-      <PhosphorCover source={folder.cover} size={size} selected={selected} images={images} badges={false} />
+    <Pressable onPress={onPress} onLongPress={onLongPress} delayLongPress={350} style={{ width: '100%', gap: 8 }}>
+      <PhosphorCover source={folder.cover} size={size} selected={selected} images={images} badges={false} check={check} danger={danger} />
       <View style={{ gap: 4 }}>
         <Text numberOfLines={1} style={[name, selected ? { textDecorationLine: 'underline' } : null]}>{folder.name}</Text>
         {folder.count != null ? (
@@ -132,18 +147,18 @@ const FolderTile = memo(function FolderTile({ folder, size, selected, images, on
   );
 });
 
-const PhotoTile = memo(function PhotoTile({ source, size, selected, images, onPress }: { source: ImageSourcePropType; size: number; selected?: boolean; images?: boolean; onPress?: () => void }) {
+const PhotoTile = memo(function PhotoTile({ source, size, selected, images, onPress, onLongPress, check }: { source: ImageSourcePropType; size: number; selected?: boolean; images?: boolean; onPress?: () => void; onLongPress?: () => void; check?: boolean | null }) {
   const ai = usePhotoAi(source); // tag lokalny lub metadane (IPTC/C2PA)
   return (
-    <Pressable onPress={onPress} style={{ width: '100%' }}>
-      <PhosphorCover source={source} size={size} selected={selected} images={images} ai={ai} />
+    <Pressable onPress={onPress} onLongPress={onLongPress} delayLongPress={350} style={{ width: '100%' }}>
+      <PhosphorCover source={source} size={size} selected={selected} images={images} ai={ai} check={check} />
     </Pressable>
   );
 });
 
 // MENU (node 360:5309) — kontekstowe menu galerii. Popover fosforowy (#E2FFE4) z ciemnym tekstem; zaznaczona
 // pozycja = ciemna „pigułka" z zielonym tekstem i bulletem „•". Nawigacja joystick góra/dół + press (lub tap).
-const MENU_ITEMS = ['SORT', 'FILTER MEDIA', 'SHOW HIDDEN ELEMENTS', 'OPEN TRASH BIN', 'CREATE NEW FOLDER', 'SETTINGS'] as const;
+const MENU_ITEMS = ['SELECT', 'SORT', 'FILTER MEDIA', 'SHOW HIDDEN ELEMENTS', 'OPEN TRASH BIN', 'CREATE NEW FOLDER', 'SETTINGS'] as const;
 
 function GalleryMenu({ index, onPick, items = MENU_ITEMS, leftHanded = false }: { index: number; onPick: (i: number) => void; items?: readonly string[]; leftHanded?: boolean }) {
   const txt = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size } as const;
@@ -168,6 +183,43 @@ function GalleryMenu({ index, onPick, items = MENU_ITEMS, leftHanded = false }: 
           </Pressable>
         );
       })}
+    </View>
+  );
+}
+
+// KOSZ (app-level, soft-delete): usuwanie = przeniesienie do kosza (pliki zostają na dysku, tylko ukryte).
+// Syntetyczny folder TRASH przyczepiony ZAWSZE na końcu listy FOLDERS. Trwałe kasowanie dopiero z wnętrza kosza.
+const TRASH_ID = '__TRASH__';
+const TRASH_KEY = 'gallery_ai:trash'; // persystencja: photoKey → źródło (zserializowane obiekty PhotoSource)
+
+// MENU ZAZNACZANIA (Figma 460:2831) — dwupoziomowy popover jak pasek EDIT: górny wiersz [SELECT (n) · ACTION],
+// dolny = podopcje aktywnego wiersza. Nawigacja joystickiem: ←/→ w wierszu, ↑/↓ między wierszami, press = akcja.
+function SelectMenu({
+  count, focus, rootIdx, subIdx, subItems, onPickRoot, onPickSub,
+}: {
+  count: number; focus: 0 | 1; rootIdx: 0 | 1; subIdx: number; subItems: readonly string[];
+  onPickRoot: (i: number) => void; onPickSub: (i: number) => void;
+}) {
+  const rootItems = [`SELECT (${count})`, 'ACTION'] as const;
+  // pełnoszerokościowy pasek na dole (jak menu EDIT): dolny wiersz = podopcje aktywnej zakładki, górny = SELECT/ACTION
+  return (
+    <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 8, paddingVertical: 8, gap: 8, alignSelf: 'stretch' }}>
+      <MenuBar items={subItems} index={subIdx} focused={focus === 1} onPick={onPickSub} />
+      <MenuBar items={rootItems} index={rootIdx} focused={focus === 0} onPick={onPickRoot} />
+    </View>
+  );
+}
+
+// OVERLAY potwierdzenia/wyniku (à la rec_ai PlaybackScreen) — nakładka na całą treść ekranu. `tone`:
+// 'red' = destrukcyjne (trwałe kasowanie), 'phosphor' = neutralne (do kosza / wynik).
+function OverlayPanel({ tone, title, sub }: { tone: 'red' | 'phosphor'; title: string; sub?: string }) {
+  const fg = tone === 'red' ? '#FF6B6B' : screen.olive.primary;
+  const t = { fontFamily: font.bodyLgBold.family, fontSize: font.bodyLgBold.size, color: fg, textAlign: 'center' as const, ...phosphorGlow, textShadowColor: color.dark21 };
+  const s = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: fg, textAlign: 'center' as const, opacity: 0.85 };
+  return (
+    <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24, gap: 8, backgroundColor: 'rgba(0,0,0,0.55)' }}>
+      <Text style={t}>{title}</Text>
+      {sub ? <Text style={s}>{sub}</Text> : null}
     </View>
   );
 }
@@ -197,6 +249,36 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const [feedSpans, setFeedSpans] = useState<Record<string, number>>({}); // rozmiar kafla feeda: photoKey → 1..cols
   const [contentW, setContentW] = useState(0);
   const [photos, setPhotos] = useState<ImageSourcePropType[]>([]); // zdjęcia otwartego folderu (mock lub media)
+
+  // TRYB ZAZNACZANIA (multi-select, Figma 460:2831). Wejście: long-press kafla / MENU→SELECT / przytrzymanie
+  // joysticka. `selectedIds` = klucze zaznaczonych (folder.id lub photoKey). Dwupoziomowe menu (SELECT/ACTION).
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selFocus, setSelFocus] = useState<0 | 1>(0); // 0 = górny wiersz (SELECT/ACTION), 1 = dolny (podopcje)
+  const [selRoot, setSelRoot] = useState<0 | 1>(0);   // 0 = SELECT, 1 = ACTION
+  const [selSub, setSelSub] = useState(0);            // indeks w podopcjach
+  const [delPhase, setDelPhase] = useState<'none' | 'confirm' | 'deleted'>('none'); // potwierdzenie usuwania
+  const [delMsg, setDelMsg] = useState<{ title: string; sub?: string; permanent: boolean }>({ title: '', permanent: false });
+
+  // KURSOR chowany podczas swipe-follow i przytrzymania joysticka (wraca po zatrzymaniu). Nie zmienia `selected`,
+  // tylko renderowaną ramkę (auto-scroll dalej działa na realnym `selected`).
+  const [cursorHidden, setCursorHidden] = useState(false);
+
+  // KOSZ — soft-delete. Mapa photoKey → źródło (pełny obiekt), persystowana. Filtruje feed/foldery; wnętrze
+  // folderu TRASH pokazuje właśnie te źródła. Trwałe kasowanie (media.deleteItems) dopiero z wnętrza kosza.
+  const [trashed, setTrashed] = useState<Record<string, ImageSourcePropType>>({});
+  const trashLoaded = useRef(false);
+  useEffect(() => {
+    AsyncStorage.getItem(TRASH_KEY).then((raw) => {
+      if (raw) { try { const p = JSON.parse(raw); if (p && typeof p === 'object') setTrashed(p); } catch { /* uszkodzone → pusty kosz */ } }
+      trashLoaded.current = true;
+    }).catch(() => { trashLoaded.current = true; });
+  }, []);
+  useEffect(() => {
+    if (!trashLoaded.current) return;
+    AsyncStorage.setItem(TRASH_KEY, JSON.stringify(trashed)).catch(() => {});
+  }, [trashed]);
+  const trashedKeys = useMemo(() => new Set(Object.keys(trashed)), [trashed]);
 
   // SORT — tryb sortowania feeda/wnętrza folderu (0=DATE↓ jak z zapytania, 1=DATE↑, 2=NAME A-Z, 3=NAME Z-A).
   // creationTime/filename z metadanych źródła. Raw (przed sortem) w refach → re-sort bez ponownego zapytania.
@@ -242,12 +324,18 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // Źródło (`allFolders`) i `media` podaje App (jedno useMedia — współdzielone z Settings).
   // widoczne foldery = whitelist − blacklist, dodatkowo bez `hidden` (chyba że SHOW HIDDEN ELEMENTS w menu).
   const [showHidden, setShowHidden] = useState(false);
+  const trashValues = useMemo(() => Object.values(trashed), [trashed]);
   const folders: Folder[] = useMemo(() => {
     let base = applyLibraryFilter(allFolders, included, excluded);
     if (!showHidden) base = base.filter((f) => !hidden.includes(f.id));
     if (sortMode >= 2) { base = [...base].sort((a, b) => a.name.localeCompare(b.name)); if (sortMode === 3) base.reverse(); } // NAME A-Z / Z-A
+    // KOSZ — syntetyczny folder ZAWSZE na końcu (gdy są jakieś realne foldery lub coś w koszu). Okładka = ostatnio
+    // wyrzucone; licznik = liczba w koszu. Nawigacja/otwieranie jak zwykły folder (id=TRASH_ID → wnętrze z `trashed`).
+    if (base.length > 0 || trashValues.length > 0) {
+      base = [...base, { id: TRASH_ID, name: 'TRASH', cover: trashValues[trashValues.length - 1], count: trashValues.length } as Folder];
+    }
     return base;
-  }, [allFolders, included, excluded, hidden, showHidden, sortMode]);
+  }, [allFolders, included, excluded, hidden, showHidden, sortMode, trashValues]);
 
   // wejście/wyjście z folderu → zaznaczenie na pierwszy + załaduj zdjęcia (mock inline / media leniwie)
   useEffect(() => {
@@ -259,6 +347,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     if (openFolder == null) { clear(); return; }
     const f = folders[openFolder];
     if (!f) { clear(); return; }
+    if (f.id === TRASH_ID) { photosRaw.current = []; clear(); return; } // kosz: wnętrze bierze wprost z `trashed` (photosView)
     if (f.photos) { photosRaw.current = f.photos; setPhotos(sortPhotos(f.photos, sortMode)); return; } // mock (web)
     if (!media) { clear(); return; }
     let cancelled = false;
@@ -271,11 +360,12 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // zbierz media ze WSZYSTKICH zdefiniowanych folderów (Promise.all + flatten).
   useEffect(() => {
     if (!feedMode) return;
-    // feed respektuje filtr biblioteki: bierzemy tylko WIDOCZNE foldery (`folders`)
-    if (DESIGN) { const raw = folders.flatMap((f) => f.photos ?? []); feedRaw.current = raw; setFeedPhotos(sortPhotos(raw, sortMode)); return; }
+    // feed respektuje filtr biblioteki: bierzemy tylko WIDOCZNE foldery (`folders`) — bez syntetycznego kosza
+    const realFolders = folders.filter((f) => f.id !== TRASH_ID);
+    if (DESIGN) { const raw = realFolders.flatMap((f) => f.photos ?? []); feedRaw.current = raw; setFeedPhotos(sortPhotos(raw, sortMode)); return; }
     if (!media) { setFeedPhotos([]); return; }
     let cancelled = false;
-    Promise.all(folders.map((f) => media.loadPhotos(f.id).catch(() => [] as ImageSourcePropType[])))
+    Promise.all(realFolders.map((f) => media.loadPhotos(f.id).catch(() => [] as ImageSourcePropType[])))
       .then((lists) => { if (!cancelled) { feedRaw.current = lists.flat(); setFeedPhotos(sortPhotos(feedRaw.current, sortMode)); } });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -290,6 +380,9 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
 
   // Auto-scroll: widok podąża za zaznaczeniem (joystick/PREV/NEXT) — FlashList.scrollToIndex.
   const listRef = useRef<any>(null);
+  const [gridViewH, setGridViewH] = useState(0);        // wysokość viewportu FlatListy (do follow-swipe: kafel w środku)
+  const gridScrolling = useRef(false);                  // trwa swipe siatki → auto-scroll wyłączony (nie walczy ze swipem)
+  const gridScrollT = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // TOAST trybu wyświetlania: pokazywany przy swipie, znika 2 s po OSTATNIM swipie (timer resetowany).
   const [toastVisible, setToastVisible] = useState(false);
@@ -310,12 +403,20 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
   const inside = openFolder !== null;
-  const n = feedMode ? feedPhotos.length : inside ? photos.length : folders.length;
+  // WIDOKI filtrowane koszem: feed/wnętrze folderu bez elementów w koszu; wnętrze KOSZA = wprost `trashed`.
+  const isTrashOpen = inside && folders[openFolder!]?.id === TRASH_ID;
+  const photosView = useMemo(
+    () => (isTrashOpen ? trashValues : photos.filter((s) => !trashedKeys.has(photoKey(s)))),
+    [isTrashOpen, trashValues, photos, trashedKeys]
+  );
+  const feedView = useMemo(() => feedPhotos.filter((s) => !trashedKeys.has(photoKey(s))), [feedPhotos, trashedKeys]);
+  const n = feedMode ? feedView.length : inside ? photosView.length : folders.length;
   const gap = inside ? PHOTO_GAP : FOLDER_GAP;
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (n <= 0 || feedMode || viewerOpen) return; // feed ma własny auto-scroll; przy otwartym podglądzie siatka jest odmontowana
+    if (gridScrolling.current) return;             // kursor podąża za swipem (onScroll) → nie centruj, nie walcz ze swipem
     // FlatList z numColumns pracuje na WIERSZACH (getItemCount = ceil(n/cols)), więc scrollToIndex oczekuje
     // indeksu WIERSZA, nie elementu. Zaznaczenie jest w tym wierszu, więc centrujemy wiersz. Po zamknięciu
     // podglądu (viewerOpen→false) siatka montuje się od nowa (scroll na górze) — rAF czeka na ref/layout,
@@ -380,15 +481,15 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // FeedGrid pozycjonuje po indeksie → przełóż wyróżnienia (photoKey → span) na indeks bieżącego feeda.
   const feedSpansByIndex = useMemo(() => {
     const out: Record<number, number> = {};
-    feedPhotos.forEach((src, i) => { const v = feedSpans[photoKey(src)]; if (v) out[i] = v; });
+    feedView.forEach((src, i) => { const v = feedSpans[photoKey(src)]; if (v) out[i] = v; });
     return out;
-  }, [feedPhotos, feedSpans]);
+  }, [feedView, feedSpans]);
 
   // NAWIGACJA PRZESTRZENNA po feedzie (masonry). Odtwarzamy pakowanie (1:1 z FeedGrid) + mapę komórka→index.
   const feedPack = useMemo(() => {
-    const spanArr = feedPhotos.map((_, i) => Math.min(feedSpansByIndex[i] || 1, feedCols));
+    const spanArr = feedView.map((_, i) => Math.min(feedSpansByIndex[i] || 1, feedCols));
     return packFeed(spanArr, feedCols);
-  }, [feedPhotos, feedSpansByIndex, feedCols]);
+  }, [feedView, feedSpansByIndex, feedCols]);
   const feedCellGrid = useMemo(() => {
     const g: number[][] = [];
     feedPack.pos.forEach((p, i) => {
@@ -421,7 +522,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // Klucz = stabilne photoKey zdjęcia (nie indeks) → wyróżnienie zostaje przy TYM zdjęciu między sesjami.
   const cycleSpan = (i: number) =>
     setFeedSpans((s) => {
-      const src = feedPhotos[i];
+      const src = feedView[i];
       if (src == null) return s;
       const key = photoKey(src);
       const cur = Math.min(s[key] || 1, cols);
@@ -431,7 +532,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
 
   // EDYTOR — pełnoekranowy podgląd + edycja (Figma „fullscreen_view/edit"). Aktywny, gdy `viewerOpen`;
   // przejmuje treść ekranu i klawiaturę. Źródło = zaznaczone zdjęcie (feed lub wnętrze folderu).
-  const currentSource = (feedMode ? feedPhotos : photos)[selected];
+  const currentSource = (feedMode ? feedView : photosView)[selected];
   const editor = useImageEditor({
     source: currentSource,
     open: viewerOpen,
@@ -448,7 +549,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // IMMERSIVE — deskryptor renderowany przez App w ROOCIE (poza obudową). Współdzieli `selected` z podglądem,
   // więc wyjście wraca na to samo zdjęcie. Lista = aktywne źródło (feed lub wnętrze folderu).
   const immersive = viewerOpen && immersiveOpen && currentSource
-    ? { photos: (feedMode ? feedPhotos : photos), index: selected, setIndex: (i: number) => setSelected(i), close: () => setImmersiveOpen(false), info: editor.info }
+    ? { photos: (feedMode ? feedView : photosView), index: selected, setIndex: (i: number) => setSelected(i), close: () => setImmersiveOpen(false), info: editor.info }
     : null;
 
   // MENU
@@ -461,14 +562,116 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     if (item === 'SORT') { const m = (sortMode + 1) % SORTS.length; setSortMode(m); showMenuToast(`SORT: ${SORTS[m]}`); return; }
     if (item === 'SHOW HIDDEN ELEMENTS') { const next = !showHidden; setShowHidden(next); showMenuToast(next ? 'SHOWING HIDDEN' : 'HIDING HIDDEN'); return; }
     setMenuOpen(false);
+    if (item === 'SELECT') { enterSelect(viewerOpen ? undefined : selected); return; } // wejście w tryb zaznaczania (zaznacz bieżący)
+    if (item === 'OPEN TRASH BIN') { const ti = folders.findIndex((f) => f.id === TRASH_ID); if (ti >= 0) { setFeedMode(false); setOpenFolder(ti); } else showMenuToast('TRASH EMPTY'); return; }
     if (item === 'SETTINGS') { onOpenSettings?.(); return; }
-    // FILTER MEDIA / OPEN TRASH BIN / CREATE NEW FOLDER — dorobimy (backlog)
+    // FILTER MEDIA / CREATE NEW FOLDER — dorobimy (backlog)
   };
   // etykiety menu (dynamiczne: SHOW ⇄ HIDE HIDDEN wg stanu)
   const menuLabels = MENU_ITEMS.map((l) => (l === 'SHOW HIDDEN ELEMENTS' ? (showHidden ? 'HIDE HIDDEN ELEMENTS' : 'SHOW HIDDEN ELEMENTS') : l));
 
+  // ── TRYB ZAZNACZANIA ────────────────────────────────────────────────────────────────────────────
+  const curList: any[] = feedMode ? feedView : inside ? photosView : folders;
+  const isFolderView = !feedMode && !inside;
+  // klucz elementu: folder.id (ROOT) lub photoKey (feed/wnętrze). KOSZ jako kafel folderu jest NIEzaznaczalny.
+  const keyOfIndex = (i: number): string | undefined => {
+    const it = curList[i];
+    if (it == null) return undefined;
+    if (isFolderView) return (it as Folder).id === TRASH_ID ? undefined : (it as Folder).id;
+    return photoKey(it as ImageSourcePropType);
+  };
+  const allKeys = (): string[] => curList.map((_, i) => keyOfIndex(i)).filter(Boolean) as string[];
+
+  const enterSelect = (i?: number) => {
+    setMenuOpen(false); setViewerOpen(false); setImmersiveOpen(false); setCursorHidden(false);
+    setSelectMode(true); setSelFocus(0); setSelRoot(0); setSelSub(0); setDelPhase('none');
+    const k = i != null ? keyOfIndex(i) : undefined;
+    setSelectedIds(k ? new Set([k]) : new Set());
+  };
+  const delTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const exitSelect = () => {
+    if (delTimer.current) { clearTimeout(delTimer.current); delTimer.current = null; }
+    setSelectMode(false); setSelectedIds(new Set()); setDelPhase('none');
+  };
+  const toggleSelectAt = (i: number) => {
+    const k = keyOfIndex(i); if (!k) return;
+    setSelectedIds((s) => { const nx = new Set(s); nx.has(k) ? nx.delete(k) : nx.add(k); return nx; });
+  };
+  const selectAll = () => setSelectedIds(new Set(allKeys()));
+  const invertSel = () => setSelectedIds((s) => { const nx = new Set<string>(); for (const k of allKeys()) if (!s.has(k)) nx.add(k); return nx; });
+  const clearSel = () => setSelectedIds(new Set());
+
+  // KOSZ — operacje. moveToTrash zwraca faktycznie dodane photoKey (do UNDO). Dla ROOT (foldery) ładuje ich zdjęcia.
+  const moveToTrash = async (keys: string[]): Promise<string[]> => {
+    const add: Record<string, ImageSourcePropType> = {};
+    if (isFolderView) {
+      for (const f of folders) {
+        if (f.id === TRASH_ID || !keys.includes(f.id)) continue;
+        let ps: ImageSourcePropType[] = f.photos ?? [];
+        if (!f.photos && media) { try { ps = await media.loadPhotos(f.id); } catch { ps = []; } }
+        ps.forEach((s) => { add[photoKey(s)] = s; });
+      }
+    } else {
+      curList.forEach((s) => { const k = photoKey(s as ImageSourcePropType); if (keys.includes(k)) add[k] = s as ImageSourcePropType; });
+    }
+    const added = Object.keys(add);
+    if (added.length) setTrashed((t) => ({ ...t, ...add }));
+    return added;
+  };
+  const restoreFromTrash = (keys: string[]) => setTrashed((t) => { const nx = { ...t }; keys.forEach((k) => delete nx[k]); return nx; });
+  const deleteForever = async (keys: string[]) => {
+    try { await media?.deleteItems(keys, []); } catch { /* systemowy dialog odrzucony */ }
+    setTrashed((t) => { const nx = { ...t }; keys.forEach((k) => delete nx[k]); return nx; });
+    media?.reload(); // odśwież okładki/liczniki albumów po trwałym skasowaniu
+  };
+
+  // USUWANIE — potwierdzenie (overlay) → wykonanie → wynik (auto-znika, 2,5 s → wyjście z trybu). Poza koszem =
+  // przeniesienie do kosza (odwracalne, UNDO); w koszu = TRWAŁE (czerwony overlay). (wzorzec rec_ai delete flow)
+  const lastMoved = useRef<string[]>([]);
+  const askDelete = () => {
+    if (selectedIds.size === 0) { showMenuToast('NOTHING SELECTED'); return; }
+    const c = selectedIds.size;
+    if (isTrashOpen) setDelMsg({ title: `DELETE ${c} FOREVER?`, sub: 'THIS CANNOT BE UNDONE', permanent: true });
+    else setDelMsg({ title: `MOVE ${c} TO TRASH?`, permanent: false });
+    setDelPhase('confirm');
+  };
+  const confirmDelete = async () => {
+    const keys = Array.from(selectedIds);
+    if (delMsg.permanent) { await deleteForever(keys); setDelMsg((m) => ({ ...m, title: 'DELETED', sub: undefined })); lastMoved.current = []; }
+    else { lastMoved.current = await moveToTrash(keys); setDelMsg((m) => ({ ...m, title: 'MOVED TO TRASH', sub: undefined })); }
+    setSelectedIds(new Set());
+    setDelPhase('deleted');
+    if (delTimer.current) clearTimeout(delTimer.current);
+    delTimer.current = setTimeout(() => { setDelPhase('none'); setSelectMode(false); }, 2500);
+  };
+  const cancelDelete = () => setDelPhase('none');
+  const undoTrash = () => { if (lastMoved.current.length) restoreFromTrash(lastMoved.current); lastMoved.current = []; exitSelect(); };
+
+  // dwupoziomowe menu: górny wiersz [SELECT · ACTION], dolny = podopcje. W koszu ACTION = [RESTORE · DELETE].
+  const SUB_SELECT = ['ALL', 'INVERSE', 'DESELECT'] as const;
+  const SUB_ACTION = (isTrashOpen ? ['RESTORE', 'DELETE'] : ['MOVE', 'COPY', 'DELETE']) as readonly string[];
+  const subItems = selRoot === 0 ? SUB_SELECT : SUB_ACTION;
+  useEffect(() => { setSelSub(0); }, [selRoot, isTrashOpen]);
+  const activateSub = (i: number) => {
+    if (selRoot === 0) { if (i === 0) selectAll(); else if (i === 1) invertSel(); else clearSel(); return; }
+    if (isTrashOpen) {
+      if (i === 0) { const keys = Array.from(selectedIds); restoreFromTrash(keys); setSelectedIds(new Set()); showMenuToast('RESTORED'); }
+      else askDelete();
+    } else {
+      if (SUB_ACTION[i] === 'DELETE') askDelete(); else showMenuToast('COMING SOON'); // MOVE/COPY — stub
+    }
+  };
+  const selPress = () => { if (selFocus === 0) setSelFocus(1); else activateSub(selSub); };
+  const selMoveH = (d: -1 | 1) => {
+    if (selFocus === 0) setSelRoot((r) => (r === 0 ? 1 : 0) as 0 | 1);
+    else setSelSub((s) => { const len = subItems.length; return (s + d + len) % len; });
+  };
+  const selMoveV = (d: -1 | 1) => setSelFocus(d > 0 ? 1 : 0);
+
   // back: kolejno zamknij MENU → (edytor: menu edycji/pod-widok, a na końcu podgląd) → folder → feed
   const goBack = () => {
+    if (delPhase === 'confirm') { cancelDelete(); return true; }
+    if (selectMode) { exitSelect(); return true; }
     if (menuOpen) { setMenuOpen(false); return true; }
     if (viewerOpen) { if (!editor.goBack()) setViewerOpen(false); return true; }
     if (inside) { setOpenFolder(null); return true; }
@@ -480,6 +683,26 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const itemWidth = contentW > 0 ? Math.floor(contentW / cols) : 0;
   const imgSize = itemWidth > 0 ? itemWidth - gap : 0;
   const rowHeight = imgSize + gap + (inside ? 0 : 34); // +podpis dla folderów (getItemLayout → pewny scrollToIndex)
+
+  // FOLDERS/wnętrze folderu (FlatList): kursor PODĄŻA za swipem (kafel w środku pionowym; 3 kol.→środek, 2 kol.→lewa).
+  // userScrolling tylko z realnego drag (onScrollBeginDrag) — programowy scrollToIndex nie blokuje wtedy auto-scrollu.
+  const gridPendingSel = useRef<number | null>(null); // kafel pod środkiem — ustawiany w `selected` DOPIERO po zatrzymaniu
+  const onGridScrollBeginDrag = () => { gridScrolling.current = true; setCursorHidden(true); if (gridScrollT.current) clearTimeout(gridScrollT.current); };
+  const onGridScroll = (e: { nativeEvent: { contentOffset: { y: number } } }) => {
+    if (!gridScrolling.current || gridViewH <= 0 || rowHeight <= 0 || n <= 0) return;
+    if (gridScrollT.current) clearTimeout(gridScrollT.current);
+    // PERF: kursor schowany podczas swipe → NIE wołamy setSelected na każde zdarzenie (re-render całego ekranu
+    // ~30×/s = okresowe spadki fps). Zapamiętujemy kafel pod środkiem, ustawiamy `selected` RAZ po zatrzymaniu.
+    const y = e.nativeEvent.contentOffset.y;
+    const row = Math.max(0, Math.floor((y + gridViewH / 2) / rowHeight));
+    gridPendingSel.current = Math.min(n - 1, row * cols + (cols === 3 ? 1 : 0));
+    gridScrollT.current = setTimeout(() => {
+      gridScrolling.current = false; setCursorHidden(false);
+      if (gridPendingSel.current != null && gridPendingSel.current !== selected) setSelected(gridPendingSel.current);
+      gridPendingSel.current = null;
+    }, 160);
+  };
+  useEffect(() => () => { if (gridScrollT.current) clearTimeout(gridScrollT.current); }, []);
 
   // Klawiatura (kolejność): THUMB SIZE · FEED VIEW · joystick · MENU · BACK.
   // 1 = THUMB SIZE (cykl gęstości 2/3 kol.), 2 = FEED VIEW (w folderach) ⇄ GALLERY VIEW (w feedzie),
@@ -510,11 +733,60 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
       onLeft: () => { if (menuOpen) return; if (feedMode && !viewerOpen) feedMoveH(-1); else move(-1); },   // podgląd: poprzednie zdjęcie
       onRight: () => { if (menuOpen) return; if (feedMode && !viewerOpen) feedMoveH(1); else move(1); },    // podgląd: następne zdjęcie
       onPress: menuOpen ? () => pickMenu(menuIndex) : viewerOpen ? closeViewer : enter,
+      // przytrzymanie środka w siatce (nie w menu/podglądzie) → tryb zaznaczania; kursor chowany na czas trzymania
+      onHoldStart: () => { if (!menuOpen && !viewerOpen) setCursorHidden(true); },
+      onHoldCancel: () => setCursorHidden(false),
+      onHoldComplete: () => { if (!menuOpen && !viewerOpen && n > 0) enterSelect(selected); },
+      holdMs: 550,
     },
+  };
+
+  // KLAWIATURA trybu zaznaczania (Figma 460:2831): ALL · BACK (ekran), DELETE(czerwony) · pusty (metal).
+  // Joystick nawiguje dwupoziomowe menu (SELECT/ACTION). BACK = wyjście z trybu.
+  const selectKeyboard: KeyboardConfig = {
+    screen: [
+      { label: 'ALL', onPress: selectAll },
+      { label: 'BACK', onPress: exitSelect },
+    ],
+    metal: [
+      { type: 'label', upper: isTrashOpen ? 'DELETE' : 'TRASH', variant: 'risk', onPress: askDelete },
+      { type: 'label', upper: '', onPress: undefined },
+    ],
+    joystick: {
+      highlighted: true,
+      onUp: () => selMoveV(-1),
+      onDown: () => selMoveV(1),
+      onLeft: () => selMoveH(-1),
+      onRight: () => selMoveH(1),
+      onPress: selPress,
+    },
+  };
+  // KLAWIATURA potwierdzenia usuwania. CONFIRM: CANCEL + przytrzymaj DELETE/MOVE (czerwony, progress ring).
+  // DELETED: UNDO (do kosza) / CLOSE. Hold + progress ring to funkcja klawisza EKRANOWEGO (nie metalowego).
+  const confirmKeyboard: KeyboardConfig = {
+    screen: delPhase === 'confirm'
+      ? [
+          { label: 'CANCEL', onPress: cancelDelete },
+          { label: delMsg.permanent ? 'DELETE' : 'MOVE', supporting: '[HOLD]', variant: 'risk', onHoldComplete: confirmDelete, holdMs: 1200 },
+        ]
+      : [
+          delMsg.permanent
+            ? { label: 'CLOSE', onPress: exitSelect }
+            : { label: 'UNDO', onPress: undoTrash },
+          { label: 'CLOSE', onPress: exitSelect },
+        ],
+    metal: [
+      { type: 'label', upper: '', onPress: undefined },
+      { type: 'label', upper: '', onPress: undefined },
+    ],
+    joystick: { highlighted: false },
   };
 
   const cap = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: screen.olive.primary, ...phosphorGlow } as const;
   const pill = { fontFamily: font.bodyLgBold.family, fontSize: font.bodyLgBold.size, color: color.dark21 } as const;
+
+  // ramka kursora chowana podczas swipe-follow / przytrzymania joysticka (selEff=-1 → żaden kafel niepodświetlony)
+  const selEff = cursorHidden ? -1 : selected;
 
   const content = (
     <>
@@ -548,38 +820,57 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
         {feedMode ? (
           contentW > 0 ? (
             <FeedGrid
-              data={feedPhotos}
+              data={feedView}
               cols={cols}
               width={contentW}
               spans={feedSpansByIndex}
-              selected={selected}
+              selected={selEff}
               images={diag.images}
               onCycleSpan={cycleSpan}
-              onOpen={openViewerAt}
+              onOpen={selectMode ? toggleSelectAt : openViewerAt}
               onSelectAt={(i) => { setSelected(i); setPrefCol(feedCols === 3 ? 1 : 0); }}
+              onScrollActive={setCursorHidden}
+              selectMode={selectMode}
+              checkedAt={(i) => { const s = feedView[i]; return s != null && selectedIds.has(photoKey(s)); }}
+              onLongPressAt={enterSelect}
             />
           ) : null
         ) : itemWidth > 0 ? (
           <FlatList
             ref={listRef}
             key={`${inside ? 'p' : 'f'}-${cols}`} // remount na zmianę widoku/kolumn → czysty relayout
-            data={(inside ? photos : folders) as any[]}
+            data={(inside ? photosView : folders) as any[]}
             numColumns={cols}
-            extraData={`${selected}:${diag.images}`}
+            extraData={`${selEff}:${diag.images}:${selectMode}:${selectedIds.size}`}
             keyExtractor={(item: any, index: number) => (inside ? `p${index}` : (item as Folder).id)}
             // numColumns → `index` to indeks WIERSZA (nie elementu); offset = rowHeight * wiersz.
             getItemLayout={(_: any, index: number) => ({ length: rowHeight, offset: rowHeight * index, index })}
             onScrollToIndexFailed={() => {}}
+            onLayout={(e: LayoutChangeEvent) => setGridViewH(e.nativeEvent.layout.height)}
+            scrollEventThrottle={32}
+            onScrollBeginDrag={onGridScrollBeginDrag}
+            onScroll={onGridScroll}
             showsVerticalScrollIndicator={false}
-            renderItem={({ item, index }: { item: any; index: number }) => (
-              <View style={{ width: itemWidth, padding: gap / 2 }}>
-                {inside ? (
-                  <PhotoTile source={item as ImageSourcePropType} size={imgSize} selected={index === selected} images={diag.images} onPress={() => { setSelected(index); setViewerOpen(true); }} />
-                ) : (
-                  <FolderTile folder={item as Folder} size={imgSize} selected={index === selected} images={diag.images} onPress={() => setOpenFolder(index)} />
-                )}
-              </View>
-            )}
+            renderItem={({ item, index }: { item: any; index: number }) => {
+              const isTrashTile = !inside && (item as Folder).id === TRASH_ID;
+              const k = inside ? photoKey(item as ImageSourcePropType) : (item as Folder).id;
+              const checked = selectMode && !isTrashTile ? selectedIds.has(k) : undefined;
+              const onTap = selectMode
+                ? (isTrashTile ? undefined : () => toggleSelectAt(index)) // w select mode kosz nieklikalny
+                : inside
+                  ? () => { setSelected(index); setViewerOpen(true); }
+                  : () => setOpenFolder(index);
+              const onLong = isTrashTile ? undefined : () => enterSelect(index);
+              return (
+                <View style={{ width: itemWidth, padding: gap / 2 }}>
+                  {inside ? (
+                    <PhotoTile source={item as ImageSourcePropType} size={imgSize} selected={index === selEff || !!checked} images={diag.images} onPress={onTap} onLongPress={onLong} check={checked} />
+                  ) : (
+                    <FolderTile folder={item as Folder} size={imgSize} selected={index === selEff || !!checked} images={diag.images} onPress={onTap} onLongPress={onLong} check={checked} danger={isTrashTile} />
+                  )}
+                </View>
+              );
+            }}
           />
         ) : null}
         {/* filtr trybu — JEDNA nakładka nad całą siatką (zamiast N per-kafel). DIAG: filter */}
@@ -626,6 +917,22 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
 
       {/* MENU (popover) — nad siatką, gdy nie ma podglądu; podąża za klawiszem MENU (left-handed → lewy róg) */}
       {menuOpen && !viewerOpen ? <GalleryMenu index={menuIndex} onPick={pickMenu} items={menuLabels} leftHanded={leftHanded} /> : null}
+
+      {/* TRYB ZAZNACZANIA — dwupoziomowe menu (SELECT/ACTION) w rogu; overlay potwierdzenia/wyniku usuwania na wierzchu */}
+      {selectMode && !viewerOpen ? (
+        <SelectMenu
+          count={selectedIds.size}
+          focus={selFocus}
+          rootIdx={selRoot}
+          subIdx={selSub}
+          subItems={subItems}
+          onPickRoot={(i) => { setSelFocus(0); setSelRoot(i as 0 | 1); }}
+          onPickSub={(i) => { setSelFocus(1); setSelSub(i); activateSub(i); }}
+        />
+      ) : null}
+      {delPhase !== 'none' ? (
+        <OverlayPanel tone={delMsg.permanent ? 'red' : 'phosphor'} title={delMsg.title} sub={delPhase === 'confirm' ? delMsg.sub : undefined} />
+      ) : null}
     </>
   );
 
@@ -636,7 +943,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const finalContent = viewerOpen
     ? (menuOpen ? <>{editor.content}<GalleryMenu index={menuIndex} onPick={pickMenu} items={menuLabels} leftHanded={leftHanded} /></> : editor.content)
     : content;
-  const finalKeyboard = menuOpen ? keyboard : viewerOpen ? editor.keyboard : keyboard;
+  const finalKeyboard = delPhase !== 'none' ? confirmKeyboard : selectMode ? selectKeyboard : menuOpen ? keyboard : viewerOpen ? editor.keyboard : keyboard;
 
-  return { content: finalContent, keyboard: finalKeyboard, goBack, pinchColumns, showModeToast, showExitToast, viewerOpen, menuOpen, allFolders, immersive, typing: viewerOpen ? editor.typing : false };
+  return { content: finalContent, keyboard: finalKeyboard, goBack, pinchColumns, showModeToast, showExitToast, viewerOpen, menuOpen, selectMode, allFolders, immersive, typing: viewerOpen ? editor.typing : false };
 }

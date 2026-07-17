@@ -421,7 +421,7 @@ export function useSettingsScreen({
   const subKeyboard: KeyboardConfig = {
     screen: [
       { label: 'TOGGLE', variant: 'primary', onPress: () => libToggle() },
-      { label: '' },
+      { label: 'BACK', onPress: () => setView('MAIN') }, // powrót z podmenu (INCLUDED/EXCLUDED/HIDDEN) do listy ustawień
     ],
     // klawisze 2/4 zostają WIDOCZNE, ale puste — prev/next tylko na joysticku (góra/dół)
     metal: [{ type: 'label', upper: '' }, { type: 'label', upper: '' }],

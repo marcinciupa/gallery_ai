@@ -32,6 +32,7 @@ export function useMedia() {
   const [folders, setFolders] = useState<MediaFolder[] | null>(null);
   const [status, setStatus] = useState<MediaStatus>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [reloadN, setReloadN] = useState(0); // bump → ponowne przeładowanie albumów (po usunięciu/operacjach na plikach)
 
   useEffect(() => {
     if (Platform.OS === 'web') { setStatus('unsupported'); return; }
@@ -94,7 +95,26 @@ export function useMedia() {
       if (!cancelled) { setError(String(e?.message ?? e)); setStatus('error'); }
     });
     return () => { cancelled = true; };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadN]);
+
+  const reload = () => setReloadN((n) => n + 1);
+
+  /**
+   * Usuwanie z biblioteki (TRWAŁE — brak wbudowanego kosza). `assetUris` = content:// URI zdjęć (Asset.delete),
+   * `albumIds` = id albumów (Album.delete; na Androidzie kasuje też zawartość). Android pokazuje SYSTEMOWY
+   * dialog potwierdzenia usunięcia. Po zakończeniu wołający robi `reload()`, by odświeżyć siatkę.
+   */
+  const deleteItems = async (assetUris: string[], albumIds: string[]): Promise<void> => {
+    if (Platform.OS === 'web') return;
+    const ML: any = await import('expo-media-library');
+    if (assetUris.length) {
+      try { await ML.Asset.delete(assetUris.map((u) => new ML.Asset(u))); } catch { /* odmowa/anulowanie systemowego dialogu */ }
+    }
+    if (albumIds.length) {
+      try { await ML.Album.delete(albumIds.map((id) => new ML.Album(id))); } catch { /* j.w. */ }
+    }
+  };
 
   /** Leniwe pobranie zdjęć albumu (przy wejściu w folder). */
   const loadPhotos = async (albumId: string): Promise<ImageSourcePropType[]> => {
@@ -110,5 +130,5 @@ export function useMedia() {
     return meta.map((m: any) => flag(m, tags) as ImageSourcePropType);
   };
 
-  return { folders, status, error, loadPhotos };
+  return { folders, status, error, loadPhotos, deleteItems, reload };
 }

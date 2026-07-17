@@ -26,6 +26,13 @@ export type JoystickConfig = {
   onPress?: () => void; // wciśnięcie środka
   repeat?: boolean;     // przytrzymanie wychylenia → powtarzaj kierunek do puszczenia (auto-repeat)
   shortStepHaptic?: boolean; // krótszy impuls na krok (np. szybka nawigacja po siatce gallery/feed)
+  // PRZYTRZYMANIE ŚRODKA (bez wychylenia): onHoldStart po krótkim czasie (feedback — np. chowaj kursor),
+  // onHoldComplete po `holdMs` (akcja — np. wejście w tryb zaznaczania), onHoldCancel przy puszczeniu przed
+  // czasem lub wychyleniu. Krótki tap (< próg startu) nie odpala żadnego z nich → nadal działa onPress.
+  onHoldStart?: () => void;
+  onHoldComplete?: () => void;
+  onHoldCancel?: () => void;
+  holdMs?: number; // domyślnie 550
 };
 
 type Dir = 'up' | 'down' | 'left' | 'right';
@@ -41,6 +48,15 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
   const ty = useRef(new Animated.Value(0)).current;
   const fired = useRef(false);
   const repeatTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // przytrzymanie środka (hold-to-select): dwa timery — startowy (feedback) i pełny (akcja)
+  const holdStartT = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdCompleteT = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdStarted = useRef(false);
+  const holdCompleted = useRef(false);
+  const clearHold = () => {
+    if (holdStartT.current) { clearTimeout(holdStartT.current); holdStartT.current = null; }
+    if (holdCompleteT.current) { clearTimeout(holdCompleteT.current); holdCompleteT.current = null; }
+  };
 
   const callDir = (dir: Dir) => {
     const c = cfgRef.current;
@@ -54,7 +70,7 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
     stopRepeat();
     repeatTimer.current = setInterval(() => { callDir(dir); hapticKnob(0.3, stepMs()); }, 120);
   };
-  useEffect(() => () => stopRepeat(), []);
+  useEffect(() => () => { stopRepeat(); clearHold(); }, []);
 
   const springBack = () => {
     Animated.spring(tx, { toValue: 0, useNativeDriver: false }).start();
@@ -69,9 +85,17 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
       onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: () => {
         fired.current = false;
+        holdStarted.current = false;
+        holdCompleted.current = false;
         const c = cfgRef.current;
         const hasAny = !!(c && (c.onUp || c.onDown || c.onLeft || c.onRight || c.onPress));
         hasAny ? hapticPress() : hapticShort();
+        // uzbrój timery przytrzymania (tylko gdy ekran ich używa). Start = 260 ms (feedback), pełny = holdMs (akcja).
+        if (c?.onHoldComplete || c?.onHoldStart) {
+          const full = c.holdMs ?? 550;
+          holdStartT.current = setTimeout(() => { holdStarted.current = true; cfgRef.current?.onHoldStart?.(); }, Math.min(260, full * 0.5));
+          holdCompleteT.current = setTimeout(() => { holdCompleted.current = true; hapticKnob(0.8, 40); cfgRef.current?.onHoldComplete?.(); }, full);
+        }
       },
       onPanResponderMove: (_e, g) => {
         const max = dims.joystick.nubTravel;
@@ -85,6 +109,9 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
         const dom = Math.max(ax, ay), sub = Math.min(ax, ay);
         if (dom > th && dom >= sub * 1.3) {
           fired.current = true;
+          // wychylenie = nawigacja, nie przytrzymanie środka → anuluj hold i przywróć kursor, jeśli już schowany
+          if (holdStarted.current && !holdCompleted.current) cfgRef.current?.onHoldCancel?.();
+          clearHold();
           // dominująca oś decyduje o kierunku (4-kier., bez skosów)
           const dir: Dir = ax >= ay ? (g.dx > 0 ? 'right' : 'left') : (g.dy > 0 ? 'down' : 'up');
           callDir(dir);
@@ -93,23 +120,36 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
         }
       },
       onPanResponderRelease: (_e, g) => {
+        clearHold();
         stopRepeat();
         springBack();
         const moved = Math.hypot(g.dx, g.dy);
         const c = cfgRef.current;
-        if (!fired.current && moved < 6) {
-          // brak wychylenia → wciśnięcie środka
-          c?.onPress?.();
-          hapticRelease();
-        } else {
+        if (holdCompleted.current) {
+          // przytrzymanie dobiegło końca (akcja już odpalona w timerze) → NIE traktuj jako tap
           hapticKnobReturn(!!c?.highlighted);
+        } else {
+          if (holdStarted.current) c?.onHoldCancel?.(); // puszczono przed czasem → przywróć kursor
+          if (!fired.current && moved < 6) {
+            // brak wychylenia → wciśnięcie środka
+            c?.onPress?.();
+            hapticRelease();
+          } else {
+            hapticKnobReturn(!!c?.highlighted);
+          }
         }
         fired.current = false;
+        holdStarted.current = false;
+        holdCompleted.current = false;
       },
       onPanResponderTerminate: () => {
+        clearHold();
         stopRepeat();
         springBack();
+        if (holdStarted.current && !holdCompleted.current) cfgRef.current?.onHoldCancel?.();
         fired.current = false;
+        holdStarted.current = false;
+        holdCompleted.current = false;
       },
     })
   ).current;

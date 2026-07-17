@@ -110,8 +110,8 @@ export function InfoPanel({ dims, fileSize, format, aiTools, aiPrompt, aiUpscale
  * dopasowania. Gesty na PanResponderze (brak gesture-handlera w projekcie). Remount przez `key` (PREV/NEXT)
  * zeruje zoom. Renderowany W POLU TREŚCI (nie fullscreen) — pasek statusu nad nim zostaje widoczny.
  */
-function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims, onImmersive }: { source: ImageSourcePropType; onPrev?: () => void; onNext?: () => void; onSwipeUp?: () => void; onSwipeDown?: () => void; onDims?: (w: number, h: number) => void; onImmersive?: () => void }) {
-  const immersedRef = useRef(false); // pinch-out w ramce → wejście w immersive (jednorazowo na gest)
+function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims, onImmersive, onExit }: { source: ImageSourcePropType; onPrev?: () => void; onNext?: () => void; onSwipeUp?: () => void; onSwipeDown?: () => void; onDims?: (w: number, h: number) => void; onImmersive?: () => void; onExit?: () => void }) {
+  const immersedRef = useRef(false); // gest ZUŻYTY (pinch-out → immersive, pinch-in → wyjście) — jednorazowo na gest
   const initRatio = useMemo(() => {
     try { const a = RNImage.resolveAssetSource(source as any); return a?.width && a?.height ? a.width / a.height : 1; } catch { return 1; }
   }, [source]);
@@ -145,11 +145,13 @@ function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims, onI
           if (!pinch.current) pinch.current = { d0: d, s0: base.current.s };
           const ratioG = d / pinch.current.d0;
           if (onImmersive) {
-            // W ramce pinch NIE zoomuje w polu — służy WYŁĄCZNIE do wejścia w IMMERSIVE po świadomym rozsunięciu
-            // (skala docelowa > 1.25 ORAZ realne rozsunięcie > 55 px — wartość pośrednia: nie odpala przypadkiem,
-            // ale reaguje na normalny gest). Po wyjściu z immersive podgląd w ramce wraca do fit (pinch tu nie zoomuje).
+            // W ramce pinch NIE zoomuje w polu — służy do przejść:
+            //  • pinch-OUT (rozsunięcie, skala > 1.25 i > 55 px) → IMMERSIVE,
+            //  • pinch-IN (zsunięcie, skala < 0.55 i > 55 px) → wyjście do FEED/FOLDERS (parametry jak wyjście z immersive).
             if (!immersedRef.current && pinch.current.s0 * ratioG > 1.25 && d - pinch.current.d0 > 55) {
               immersedRef.current = true; onImmersive();
+            } else if (!immersedRef.current && onExit && pinch.current.s0 * ratioG < 0.55 && pinch.current.d0 - d > 55) {
+              immersedRef.current = true; onExit();
             }
             return;
           }
@@ -632,7 +634,7 @@ export function useImageEditor({
         {/* content_area: obraz/pod-widok (zajmuje resztę wysokości), a pod nim — dolne menu EDIT */}
         <View style={{ flex: 1, alignSelf: 'stretch' }}>
           {view === 'viewer' ? (
-            displaySource ? <ZoomImage key={workingUri ?? String((source as any)?.uri ?? source)} source={displaySource} onPrev={processing ? undefined : onPrev} onNext={processing ? undefined : onNext} onSwipeUp={() => setInfoOpen(true)} onSwipeDown={() => setInfoOpen(false)} onDims={(w, h) => { if (!assetDimsRef.current) setDims({ w, h }); }} onImmersive={processing || workingUri ? undefined : onRequestImmersive} /> : null
+            displaySource ? <ZoomImage key={workingUri ?? String((source as any)?.uri ?? source)} source={displaySource} onPrev={processing ? undefined : onPrev} onNext={processing ? undefined : onNext} onSwipeUp={() => setInfoOpen(true)} onSwipeDown={() => setInfoOpen(false)} onDims={(w, h) => { if (!assetDimsRef.current) setDims({ w, h }); }} onImmersive={processing || workingUri ? undefined : onRequestImmersive} onExit={processing || workingUri ? undefined : onExit} /> : null
           ) : view === 'crop' ? (
             displaySource ? <CropStage ref={cropRef} source={displaySource} onDirty={setCropDirty} /> : null
           ) : view === 'magicErase' ? (
