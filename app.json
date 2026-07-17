@@ -2,7 +2,7 @@
   "expo": {
     "name": "Gallery AI",
     "slug": "gallery-ai",
-    "version": "0.942",
+    "version": "0.952",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -12,12 +12,12 @@
     },
     "android": {
       "package": "com.glue010.galleryai",
-      "versionCode": 9420,
+      "versionCode": 9520,
       "blockedPermissions": [
         "android.permission.ACTIVITY_RECOGNITION"
       ],
       "adaptiveIcon": {
-        "backgroundColor": "#0F1317",
+        "backgroundColor": "#1A1A1A",
         "foregroundImage": "./assets/android-icon-foreground.png"
       },
       "predictiveBackGestureEnabled": false

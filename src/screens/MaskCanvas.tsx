@@ -9,6 +9,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, PanResponder, Image as RNImage, ImageSourcePropType, LayoutChangeEvent } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
+import * as ImageManipulator from 'expo-image-manipulator';
 import Svg, { Path, Defs, Mask, Rect, Image as SvgImage } from 'react-native-svg';
 import { color, font, screen, textShadow } from '../theme/tokens';
 import { hapticTick, hapticDetent } from '../lib/haptics';
@@ -99,8 +100,23 @@ export const MaskCanvas = forwardRef<MaskCanvasHandle, {
   onInteractPanel?: () => void;          // tap/drag na pod-pasku → rodzic ustawia fokus na 2. poziom
 }>(function MaskCanvas({ source, dimmed, paintEnabled, panel, secondFocused, onState, onPaintStart, onInteractPanel }, ref) {
   const resolved = useMemo(() => { try { return RNImage.resolveAssetSource(source as any); } catch { return null; } }, [source]);
-  const uri = resolved?.uri ?? '';
+  const rawUri = resolved?.uri ?? '';
   const [ratio, setRatio] = useState(resolved?.width && resolved?.height ? resolved.width / resolved.height : 1);
+  // NORMALIZACJA EXIF: manipulator dekoduje obraz z uwzględnieniem orientacji i zapisuje „prosto". Używamy tego
+  // samego (upright) źródła do TŁA (ExpoImage) I do odsłony w SVG (SvgImage rysuje surowe piksele — bez EXIF
+  // odsłonięty obraz był obrócony). `w/h` z manipulatora = poprawny (obrócony) aspekt pola.
+  const [norm, setNorm] = useState<{ uri: string; w: number; h: number } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setNorm(null);
+    if (!rawUri) return;
+    ImageManipulator.manipulateAsync(rawUri, [], { format: ImageManipulator.SaveFormat.PNG })
+      .then((r) => { if (!cancelled) { setNorm({ uri: r.uri, w: r.width, h: r.height }); if (r.width && r.height) setRatio(r.width / r.height); } })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [rawUri]);
+  const displayUri = norm?.uri ?? rawUri;
+  const imgSource: ImageSourcePropType = norm ? { uri: norm.uri } : source;
 
   const [areaW, setAreaW] = useState(0);
   const [areaH, setAreaH] = useState(0);
@@ -173,7 +189,7 @@ export const MaskCanvas = forwardRef<MaskCanvasHandle, {
           // box-only: to POLE jest celem dotyku (nie dzieci) → locationX/Y są względem pola obrazu
           <View style={{ width: fit.w, height: fit.h }} pointerEvents="box-only" {...responder.panHandlers}>
             <ExpoImage
-              source={source}
+              source={imgSource}
               contentFit="fill"
               cachePolicy="memory-disk"
               transition={0}
@@ -204,7 +220,7 @@ export const MaskCanvas = forwardRef<MaskCanvasHandle, {
                   {/* fosforowy kształt całego zaznaczenia… */}
                   <Rect x="0" y="0" width={fit.w} height={fit.h} fill={screen.olive.primary} mask="url(#mphos)" />
                   {/* …a na wierzchu jasny oryginał (nieco mniejszy) → z fosforu zostaje tylko obwódka */}
-                  {uri ? <SvgImage href={{ uri }} x="0" y="0" width={fit.w} height={fit.h} preserveAspectRatio="none" mask="url(#mfill)" /> : null}
+                  {displayUri ? <SvgImage href={{ uri: displayUri }} x="0" y="0" width={fit.w} height={fit.h} preserveAspectRatio="none" mask="url(#mfill)" /> : null}
                 </Svg>
               </>
             ) : null}

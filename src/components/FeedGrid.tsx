@@ -2,7 +2,7 @@
  * FeedGrid — „feed": płaska siatka WSZYSTKICH mediów (kwadratowe kafle). Zaznaczony kafel dostaje podwójną
  * ramkę (jak w siatce) + TRÓJKĄTNY uchwyt w prawym-dolnym rogu; tap w uchwyt cykluje rozmiar kafla:
  *   • 2 kolumny: 1× ↔ 2×      • 3 kolumny: 1× → 2× → 3× → 1×
- * Reszta układa się automatycznie (skyline-masonry). Wirtualizacja RĘCZNA: kafle są absolutnie pozycjonowane
+ * Reszta układa się automatycznie (grid-masonry z backfillem dziur). Wirtualizacja RĘCZNA: kafle są absolutnie pozycjonowane
  * w ScrollView o policzonej wysokości, a renderujemy tylko te w oknie widoku (+bufor) — mount ≈ ekran, nie N.
  * (Pakowanie/filtr to tania arytmetyka O(N); ciężką rzeczą jest mount Views, który okno ogranicza.)
  */
@@ -15,26 +15,36 @@ import { color, screen } from '../theme/tokens';
 export const FEED_GAP = 8;
 
 /**
- * Skyline packer: kwadratowe kafle K×K na siatce `cols`. Dla każdego kafla wybieramy pozycję NAJWYŻEJ, przy
- * remisie NAJBARDZIEJ W LEWO (topmost-leftmost). heights[c] = następny wolny wiersz w kolumnie c. O(N·cols).
+ * Grid-occupancy packer: kwadratowe kafle K×K na siatce `cols`. Dla każdego kafla szukamy PIERWSZEGO wolnego
+ * bloku K×K, skanując topmost-leftmost po REALNEJ zajętości komórek (nie po skyline). Dzięki temu kolejne kafle
+ * BACKFILLUJĄ dziury pod szerokimi kaflami — powiększenie jednego kafla nie zostawia trwałych wolnych slotów.
+ * `searchStart` = pierwszy wiersz z jakąkolwiek wolną komórką (w pełni wypełnionych wierszy nie skanujemy) →
+ * w praktyce O(N·cols): kursor przesuwa się do przodu, a „otwarte" pozostaje tylko wąskie pasmo przy froncie.
  */
 export function packFeed(spans: number[], cols: number): { pos: { r: number; c: number; k: number }[]; rows: number } {
-  const heights = new Array(cols).fill(0);
-  const pos: { r: number; c: number; k: number }[] = [];
+  const grid: boolean[][] = [];                                    // grid[r][c] = komórka zajęta
+  const row = (r: number): boolean[] => {                          // leniwe rozszerzanie siatki w dół
+    while (grid.length <= r) grid.push(new Array(cols).fill(false));
+    return grid[r];
+  };
+  const fits = (r: number, c: number, k: number): boolean => {
+    for (let dr = 0; dr < k; dr++) { const g = row(r + dr); for (let dc = 0; dc < k; dc++) if (g[c + dc]) return false; }
+    return true;
+  };
+  const pos: { r: number; c: number; k: number }[] = new Array(spans.length);
+  let searchStart = 0;
   for (let i = 0; i < spans.length; i++) {
     const k = Math.min(Math.max(spans[i] || 1, 1), cols);
-    let bestC = 0;
-    let bestR = Infinity;
-    for (let c = 0; c + k <= cols; c++) {
-      let r = 0;
-      for (let d = 0; d < k; d++) r = Math.max(r, heights[c + d]);
-      if (r < bestR) { bestR = r; bestC = c; }
+    let pr = -1, pc = 0;
+    for (let r = searchStart; pr < 0; r++) {                       // topmost-leftmost first-fit (pusty wiersz zawsze mieści k≤cols)
+      for (let c = 0; c + k <= cols; c++) { if (fits(r, c, k)) { pr = r; pc = c; break; } }
     }
-    for (let d = 0; d < k; d++) heights[bestC + d] = bestR + k;
-    pos.push({ r: bestR, c: bestC, k });
+    for (let dr = 0; dr < k; dr++) { const g = row(pr + dr); for (let dc = 0; dc < k; dc++) g[pc + dc] = true; }
+    pos[i] = { r: pr, c: pc, k };
+    while (searchStart < grid.length && grid[searchStart].every(Boolean)) searchStart++; // pomiń wypełnione wiersze
   }
   let rows = 0;
-  for (let c = 0; c < cols; c++) if (heights[c] > rows) rows = heights[c];
+  for (let r = grid.length - 1; r >= 0; r--) { if (grid[r].some(Boolean)) { rows = r + 1; break; } }
   return { pos, rows };
 }
 
@@ -72,7 +82,7 @@ const FeedTile = memo(function FeedTile({
 });
 
 export const FeedGrid = memo(function FeedGrid({
-  data, cols, width, spans, selected, images = true, onCycleSpan, onOpen,
+  data, cols, width, spans, selected, images = true, onCycleSpan, onOpen, onSelectAt,
 }: {
   data: ImageSourcePropType[];
   cols: number;
@@ -82,6 +92,7 @@ export const FeedGrid = memo(function FeedGrid({
   images?: boolean;
   onCycleSpan: (i: number) => void;
   onOpen: (i: number) => void;
+  onSelectAt?: (i: number) => void; // przy swipie kursor podąża za scrollem (kafel w środku pionowym; 3 kol.→środek, 2 kol.→lewa)
 }) {
   // Geometria 1:1 z gallery view: kolumna = width/cols (pitch), kafel 1× = kolumna − gap, margines zewn. = gap/2
   // (odpowiednik `padding: gap/2` na kaflach FlatListy). Dzięki temu feed ma tę samą szerokość i marginesy.
@@ -95,35 +106,65 @@ export const FeedGrid = memo(function FeedGrid({
   const { pos, rows } = useMemo(() => packFeed(spanArr, cols), [spanArr, cols]);
   const totalH = rows > 0 ? rows * step : 0; // + margines gap/2 u góry i dołu (symetrycznie z gallery)
 
+  // mapa komórka→index (do wyznaczenia kafla pod środkiem ekranu przy swipie)
+  const cellGrid = useMemo(() => {
+    const g: number[][] = [];
+    pos.forEach((p, i) => { for (let dr = 0; dr < p.k; dr++) { const row = g[p.r + dr] || (g[p.r + dr] = []); for (let dc = 0; dc < p.k; dc++) row[p.c + dc] = i; } });
+    return g;
+  }, [pos]);
+
   const scrollRef = useRef<ScrollView>(null);
   const [viewH, setViewH] = useState(0);
   const [win, setWin] = useState({ top: 0, bottom: 0 });
   const lastY = useRef(0);
+  const userScrolling = useRef(false);          // trwa swipe/momentum → auto-scroll wyłączony (nie walczy ze swipem)
+  const scrollStopT = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const setWindow = (y: number, vh: number) => {
     const buf = step * 2;
     setWin({ top: y - buf, bottom: y + vh + buf });
   };
+  // userScrolling ustawiamy TYLKO z realnego drag (onScrollBeginDrag) — programowy scrollTo (auto-scroll joysticka)
+  // też odpala onScroll, ale NIE onScrollBeginDrag, więc nie blokuje wtedy auto-scrollu ani nie „podąża".
+  const onScrollBeginDrag = () => { userScrolling.current = true; if (scrollStopT.current) clearTimeout(scrollStopT.current); };
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y;
     if (Math.abs(y - lastY.current) >= step) { lastY.current = y; setWindow(y, viewH); } // przelicz okno raz na wiersz
+    if (!userScrolling.current) return; // scroll programowy → tylko okno wirtualizacji; bez podążania i blokady
+    if (scrollStopT.current) clearTimeout(scrollStopT.current); // reset flagi po chwili ciszy (koniec swipe+momentum)
+    scrollStopT.current = setTimeout(() => { userScrolling.current = false; }, 160);
+    // kursor PODĄŻA za swipem: kafel pod środkiem pionowym; kolumna = 3 kol.→środek (1), 2 kol.→lewa (0)
+    if (onSelectAt && viewH > 0) {
+      const r = Math.max(0, Math.floor((y + viewH / 2 - inset) / step));
+      const idx = cellGrid[r]?.[cols === 3 ? 1 : 0];
+      if (idx != null && idx !== selected) onSelectAt(idx);
+    }
   };
   const onLayout = (e: LayoutChangeEvent) => { const h = e.nativeEvent.layout.height; setViewH(h); setWindow(lastY.current, h); };
 
-  // auto-scroll: widok podąża za zaznaczeniem (joystick/PREV/NEXT) — wyśrodkuj wiersz zaznaczonego kafla
+  // auto-scroll: widok podąża za zaznaczeniem (joystick/PREV/NEXT) — wyśrodkuj wiersz zaznaczonego kafla.
+  // `viewH` w zależnościach: po (re)montażu feeda (np. powrót z podglądu BACK) layout mierzy się PO pierwszym
+  // renderze — bez tego efekt odpalał się przy viewH=0 (skip) i nigdy nie przywracał pozycji → skok na górę listy.
+  const didScroll = useRef(false);
   useEffect(() => {
     const p = pos[selected];
     if (!p || viewH <= 0) return;
+    if (userScrolling.current) return; // kursor podąża za swipem (onScroll) → nie centruj, żeby nie walczyć ze swipem
     const sizeSel = p.k * cell + (p.k - 1) * gap;
     const target = Math.max(0, p.r * step + inset + sizeSel / 2 - viewH / 2);
-    try { scrollRef.current?.scrollTo({ y: target, animated: true }); } catch {}
+    const animated = didScroll.current; // pierwsze dojście (po layout) = przywrócenie bez animacji; kolejne (joystick) = z animacją
+    didScroll.current = true;
+    lastY.current = target; setWindow(target, viewH); // okno wirtualizacji od razu wokół celu (nie od góry)
+    try { scrollRef.current?.scrollTo({ y: target, animated }); } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, cols]);
+  }, [selected, cols, viewH]);
+  useEffect(() => () => { if (scrollStopT.current) clearTimeout(scrollStopT.current); }, []);
 
   return (
     <ScrollView
       ref={scrollRef}
       scrollEventThrottle={32}
+      onScrollBeginDrag={onScrollBeginDrag}
       onScroll={onScroll}
       onLayout={onLayout}
       showsVerticalScrollIndicator={false}

@@ -20,7 +20,7 @@ import { MagicEraseStage, MagicEraseHandle, MagicEraseState } from './MagicErase
 import { AiStage, AiStageHandle } from './AiStage';
 import { editImage, fillImage, boostPrompt, upscaleImage } from '../lib/deapi';
 import { saveImageToLibrary } from '../lib/saveImage';
-import { getProvenance, isAiSource, type Provenance, type SourceType } from '../lib/imageMeta';
+import { getProvenance, getFileBytes, isAiSource, type Provenance, type SourceType } from '../lib/imageMeta';
 import { ensureLocalFile } from '../lib/localFile';
 
 const phosphorGlow = {
@@ -48,7 +48,7 @@ const AI_MODEL = 'DEAPI · Z-IMAGE'; // model stojący za edycjami AI (deAPI / z
  * Dane: wymiary/rozdzielczość z realnie wczytanego obrazu; FILE SIZE = „—" (brak expo-file-system, dojdzie później).
  * Sekcja AI mówi WPROST o ingerencji AI: czy edytowano, jakimi narzędziami, jakim modelem i z jakim promptem.
  */
-function InfoField({ cap, val, grow }: { cap: string; val: string; grow?: boolean }) {
+export function InfoField({ cap, val, grow }: { cap: string; val: string; grow?: boolean }) {
   return (
     <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
       <Text style={{ fontFamily: font.monoBody.family, fontSize: 10, color: screen.olive.primary, ...phosphorGlow }}>{cap}</Text>
@@ -57,17 +57,39 @@ function InfoField({ cap, val, grow }: { cap: string; val: string; grow?: boolea
   );
 }
 const sourceLabel = (t: SourceType): string => (t === 'ai' ? 'AI GENERATED' : t === 'aiComposite' ? 'AI COMPOSITE' : t === 'capture' ? 'CAMERA' : '—');
-const formatBytes = (n: number): string => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}MB` : n >= 1e3 ? `${Math.round(n / 1e3)}KB` : `${n}B`);
-function InfoPanel({ dims, fileSize, aiTools, aiPrompt, aiUpscale, prov }: { dims: { w: number; h: number } | null; fileSize: string | null; aiTools: string[]; aiPrompt: string | null; aiUpscale: number | null; prov: Provenance | null }) {
-  const mp = dims ? Math.round((dims.w * dims.h) / 1e5) / 10 : null; // megapiksele, 1 miejsce po przecinku
+export const formatBytes = (n: number): string => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}MB` : n >= 1e3 ? `${Math.round(n / 1e3)}KB` : `${n}B`);
+// FORMAT do panelu INFO: rzeczywisty format z rozszerzenia pliku; RAW jako np. „.dng (RAW)".
+export function formatLabel(filename?: string | null, raw?: boolean): string | null {
+  const ext = filename?.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+  if (!ext) return raw ? 'RAW' : null;
+  return raw ? `.${ext} (RAW)` : ext.toUpperCase();
+}
+
+// Dane panelu INFO — wyliczone raz w useImageEditor, współdzielone z podglądem w ramce ORAZ z immersive (ten sam panel).
+export type ImageInfo = {
+  open: boolean;
+  setOpen: (v: boolean) => void;
+  dims: { w: number; h: number } | null;
+  fileSize: string | null;
+  format: string | null;
+  filename: string | null;
+  aiTools: string[];
+  aiPrompt: string | null;
+  aiUpscale: number | null;
+  prov: Provenance | null;
+};
+
+export function InfoPanel({ dims, fileSize, format, aiTools, aiPrompt, aiUpscale, prov }: { dims: { w: number; h: number } | null; fileSize: string | null; format?: string | null; aiTools: string[]; aiPrompt: string | null; aiUpscale: number | null; prov: Provenance | null }) {
+  const mp = dims ? Math.ceil((dims.w * dims.h) / 1e5) / 10 : null; // megapiksele; zaokrąglenie W GÓRĘ do 0.1 (stabilne, bez migania)
   // SOURCE/C2PA = odczyt ze standardów (IPTC digitalSourceType + obecność Content Credentials) z oryginału.
-  // AI EDITED = ingerencja AI: z metadanych oryginału LUB z edycji AI w tej sesji.
+  // FORMAT = rzeczywisty format z rozszerzenia (RAW → np. „.dng (RAW)"). AI EDITED = ingerencja AI (metadane lub edycja).
   const edited = aiTools.length > 0 || isAiSource(prov?.sourceType ?? null);
   const rows: [string, string][][] = [
     [['RESOLUTION', mp != null ? `${mp}MP` : '—'], ['FILE SIZE', fileSize ?? '—']],
     [['WIDTH', dims ? `${dims.w}px` : '—'], ['HEIGHT', dims ? `${dims.h}px` : '—']],
-    [['SOURCE', sourceLabel(prov?.sourceType ?? null)], ['C2PA', prov?.hasC2PA ? 'YES' : 'NO']],
-    [['AI EDITED', edited ? 'YES' : 'NO'], ['AI UPSCALE', aiUpscale ? `YES (${aiUpscale}X)` : 'NO']],
+    [['FORMAT', format ?? '—'], ['C2PA', prov?.hasC2PA ? 'YES' : 'NO']],
+    [['SOURCE', sourceLabel(prov?.sourceType ?? null)], ['AI EDITED', edited ? 'YES' : 'NO']],
+    [['AI UPSCALE', aiUpscale ? `YES (${aiUpscale}X)` : 'NO']],
   ];
   return (
     <View style={{ alignSelf: 'stretch', gap: 8 }}>
@@ -88,7 +110,8 @@ function InfoPanel({ dims, fileSize, aiTools, aiPrompt, aiUpscale, prov }: { dim
  * dopasowania. Gesty na PanResponderze (brak gesture-handlera w projekcie). Remount przez `key` (PREV/NEXT)
  * zeruje zoom. Renderowany W POLU TREŚCI (nie fullscreen) — pasek statusu nad nim zostaje widoczny.
  */
-function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims }: { source: ImageSourcePropType; onPrev?: () => void; onNext?: () => void; onSwipeUp?: () => void; onSwipeDown?: () => void; onDims?: (w: number, h: number) => void }) {
+function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims, onImmersive }: { source: ImageSourcePropType; onPrev?: () => void; onNext?: () => void; onSwipeUp?: () => void; onSwipeDown?: () => void; onDims?: (w: number, h: number) => void; onImmersive?: () => void }) {
+  const immersedRef = useRef(false); // pinch-out w ramce → wejście w immersive (jednorazowo na gest)
   const initRatio = useMemo(() => {
     try { const a = RNImage.resolveAssetSource(source as any); return a?.width && a?.height ? a.width / a.height : 1; } catch { return 1; }
   }, [source]);
@@ -113,14 +136,24 @@ function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims }: {
       onMoveShouldSetPanResponder: () => true,
       // nie oddawaj gestu responderowi obudowy (swipe ekranu) — inaczej swipe zmiany zdjęcia „ucieka"
       onPanResponderTerminationRequest: () => false,
-      onPanResponderGrant: () => { base.current = { ...cur.current }; pinch.current = null; didPinch.current = false; },
+      onPanResponderGrant: () => { base.current = { ...cur.current }; pinch.current = null; didPinch.current = false; immersedRef.current = false; },
       onPanResponderMove: (e, g) => {
         const ts = e.nativeEvent.touches;
         if (ts.length >= 2) {
           didPinch.current = true;
           const d = dist2(ts);
           if (!pinch.current) pinch.current = { d0: d, s0: base.current.s };
-          const s = clamp(pinch.current.s0 * (d / pinch.current.d0), 1, 6);
+          const ratioG = d / pinch.current.d0;
+          if (onImmersive) {
+            // W ramce pinch NIE zoomuje w polu — służy WYŁĄCZNIE do wejścia w IMMERSIVE po świadomym rozsunięciu
+            // (skala docelowa > 1.25 ORAZ realne rozsunięcie > 55 px — wartość pośrednia: nie odpala przypadkiem,
+            // ale reaguje na normalny gest). Po wyjściu z immersive podgląd w ramce wraca do fit (pinch tu nie zoomuje).
+            if (!immersedRef.current && pinch.current.s0 * ratioG > 1.25 && d - pinch.current.d0 > 55) {
+              immersedRef.current = true; onImmersive();
+            }
+            return;
+          }
+          const s = clamp(pinch.current.s0 * ratioG, 1, 6);
           cur.current.s = s;
           scale.setValue(s);
         } else if (ts.length === 1 && base.current.s > 1) {
@@ -194,6 +227,7 @@ export function useImageEditor({
   onCycleMode,
   onOpenSettings,
   onMenu,
+  onRequestImmersive,
   leftHanded = false,
   promptBooster = false,
 }: {
@@ -205,9 +239,10 @@ export function useImageEditor({
   onCycleMode?: () => void; // kliknięcie kafelka trybu → cykl GALLERY/VIEWER/SETTINGS (tylko tryb VIEWER)
   onOpenSettings?: () => void; // menu EDIT → SETTINGS: otwórz ustawienia aplikacji
   onMenu?: () => void;   // klawisz MENU w podglądzie → kontekstowe menu GALERII (domyślna funkcja MENU)
+  onRequestImmersive?: () => void; // press joysticka / pinch-out w viewerze → pełnoekranowy IMMERSIVE
   leftHanded?: boolean;  // klawiatura lustrzana (rezerwa — pasek menu jest wyśrodkowany)
   promptBooster?: boolean; // ustawienie EDIT/PROMPT BOOSTER — ulepsz prompt AI przed edycją
-}): { content: ReactNode; keyboard: KeyboardConfig; goBack: () => boolean; typing: boolean } {
+}): { content: ReactNode; keyboard: KeyboardConfig; goBack: () => boolean; typing: boolean; info: ImageInfo } {
   const [view, setView] = useState<EditView>('viewer');
   // menu EDIT (dolny dwupoziomowy pasek): otwarcie + fokus poziomu (main=zakładki, sub=funkcje AI) + indeksy.
   const [menuOpen, setMenuOpen] = useState(false);
@@ -225,7 +260,8 @@ export function useImageEditor({
   const [cropDirty, setCropDirty] = useState(false);
   // INFO: panel parametrów obrazka (swipe-up / klawisz INFO). Dane + ślad ingerencji AI.
   const [infoOpen, setInfoOpen] = useState(false);
-  const [dims, setDims] = useState<{ w: number; h: number } | null>(null); // realne wymiary z wczytanego obrazu
+  const [dims, setDims] = useState<{ w: number; h: number } | null>(null); // wymiary obrazu do INFO
+  const assetDimsRef = useRef(false); // czy `dims` pochodzi już z MediaLibrary (autorytatywne) — wtedy onLoad expo-image ich nie nadpisuje
   const [fileSize, setFileSize] = useState<string | null>(null); // rozmiar pliku (TODO: expo-file-system / EXIF)
   const [aiTools, setAiTools] = useState<string[]>([]); // narzędzia AI użyte w tej sesji (dedup, kolejność)
   const [aiPrompt, setAiPrompt] = useState<string | null>(null); // ostatni prompt TEXT TO IMAGE
@@ -252,17 +288,29 @@ export function useImageEditor({
   useEffect(() => {
     if (!open) { setView('viewer'); setMenuOpen(false); setMenuTier('main'); setMainIdx(0); setAiIdx(AI_TEXT2IMG); setWorkingUri(null); setTyping(false); setDraft(''); setProcessing(false); setBoosting(false); setAiError(null); setToast(null); setFillOffer(false); setMagic({ applied: false, hasSelection: false, removeBg: false, processing: false }); setCropDirty(false); setInfoOpen(false); setDims(null); setFileSize(null); setAiTools([]); setAiPrompt(null); setAiUpscale(null); setProv(null); }
   }, [open]);
-  // zmiana zdjęcia (PREV/NEXT) → porzuć wynik edycji poprzedniego oraz ślad AI/wymiary
-  useEffect(() => { setWorkingUri(null); setFillOffer(false); setDims(null); setFileSize(null); setAiTools([]); setAiPrompt(null); setAiUpscale(null); }, [source]);
-  // prowieniencja ORYGINAŁU (nie obrazu roboczego): odczyt IPTC/C2PA z metadanych, leniwie + z cache
+  // zmiana zdjęcia (PREV/NEXT) → porzuć wynik edycji poprzedniego oraz ślad AI. Wymiary bierzemy WPROST z metadanych
+  // źródła (AssetMetadata width/height — synchronicznie, autorytatywnie); dopiero gdy ich brak → fallback na onLoad.
+  useEffect(() => {
+    setWorkingUri(null); setFillOffer(false); setFileSize(null); setAiTools([]); setAiPrompt(null); setAiUpscale(null);
+    const mw = (source as any)?.mediaWidth, mh = (source as any)?.mediaHeight;
+    if (typeof mw === 'number' && typeof mh === 'number' && mw > 0 && mh > 0) { setDims({ w: mw, h: mh }); assetDimsRef.current = true; }
+    else { setDims(null); assetDimsRef.current = false; }
+  }, [source]);
+  // prowieniencja (IPTC/C2PA — LEKKA, sam nagłówek) + rozmiar pliku (getFileBytes — osobno, bez kopiowania).
+  // Wymiary NIE stąd — biorą się z metadanych źródła (AssetMetadata) w efekcie [source] wyżej.
+  // ⚠️ PERF: TYLKO gdy panel INFO jest OTWARTY (`open && infoOpen`) — inaczej getProvenance (256KB read + b64ToStr =
+  // alokacja + blokada JS) leciałby przy KAŻDYM swipie w immersive → GC co kilka przesunięć = skoki FPS. Dane INFO
+  // są potrzebne dopiero, gdy panel widać.
   useEffect(() => {
     setProv(null);
+    if (!open || !infoOpen) return;
     let uri = ''; try { uri = RNImage.resolveAssetSource(source as any)?.uri ?? ''; } catch { /* ignore */ }
     if (!uri) return;
     let alive = true;
-    getProvenance(uri).then((p) => { if (alive) { setProv(p); if (p.bytes != null) setFileSize(formatBytes(p.bytes)); } }).catch(() => {});
+    getProvenance(uri).then((p) => { if (alive) setProv(p); }).catch(() => {});
+    getFileBytes(uri).then((b) => { if (alive && b != null) setFileSize(formatBytes(b)); }).catch(() => {});
     return () => { alive = false; };
-  }, [source]);
+  }, [source, open, infoOpen]);
   // wyjście z widoku AI → zakończ pisanie; wejście w pod-widok → schowaj ofertę wypełnienia
   useEffect(() => { if (view !== 'ai') setTyping(false); if (view !== 'viewer') setFillOffer(false); }, [view]);
   // gdy zakładka główna nie jest AI EDIT → nie ma pod-paska, więc fokus wraca na pasek główny
@@ -570,7 +618,8 @@ export function useImageEditor({
           highlighted: true,
           onLeft: onPrev,
           onRight: onNext,
-          onPress: openMenu,
+          // press joysticka w podglądzie ORYGINAŁU → IMMERSIVE (pełny ekran); dla obrazu roboczego (edycja) → menu EDIT
+          onPress: workingUri ? openMenu : (onRequestImmersive ?? openMenu),
         },
       };
     }
@@ -583,7 +632,7 @@ export function useImageEditor({
         {/* content_area: obraz/pod-widok (zajmuje resztę wysokości), a pod nim — dolne menu EDIT */}
         <View style={{ flex: 1, alignSelf: 'stretch' }}>
           {view === 'viewer' ? (
-            displaySource ? <ZoomImage key={workingUri ?? String((source as any)?.uri ?? source)} source={displaySource} onPrev={processing ? undefined : onPrev} onNext={processing ? undefined : onNext} onSwipeUp={() => setInfoOpen(true)} onSwipeDown={() => setInfoOpen(false)} onDims={(w, h) => setDims({ w, h })} /> : null
+            displaySource ? <ZoomImage key={workingUri ?? String((source as any)?.uri ?? source)} source={displaySource} onPrev={processing ? undefined : onPrev} onNext={processing ? undefined : onNext} onSwipeUp={() => setInfoOpen(true)} onSwipeDown={() => setInfoOpen(false)} onDims={(w, h) => { if (!assetDimsRef.current) setDims({ w, h }); }} onImmersive={processing || workingUri ? undefined : onRequestImmersive} /> : null
           ) : view === 'crop' ? (
             displaySource ? <CropStage ref={cropRef} source={displaySource} onDirty={setCropDirty} /> : null
           ) : view === 'magicErase' ? (
@@ -620,7 +669,7 @@ export function useImageEditor({
 
         {/* INFO — parametry obrazka + ślad AI (Figma _AI 426:7051). Nad menu, gdy oba otwarte. Swipe-up/INFO. */}
         {view === 'viewer' && infoOpen ? (
-          <InfoPanel dims={dims} fileSize={fileSize} aiTools={aiTools} aiPrompt={aiPrompt} aiUpscale={aiUpscale} prov={prov} />
+          <InfoPanel dims={dims} fileSize={fileSize} format={formatLabel((source as any)?.filename, !!(source as any)?.raw)} aiTools={aiTools} aiPrompt={aiPrompt} aiUpscale={aiUpscale} prov={prov} />
         ) : null}
 
         {/* MENU EDIT — dwupoziomowy pasek pod obrazem (Figma _AI), tylko w widoku VIEWER.
@@ -666,5 +715,6 @@ export function useImageEditor({
     </>
   );
 
-  return { content, keyboard, goBack, typing };
+  const info: ImageInfo = { open: infoOpen, setOpen: setInfoOpen, dims, fileSize, format: formatLabel((source as any)?.filename, !!(source as any)?.raw), filename: (source as any)?.filename ?? null, aiTools, aiPrompt, aiUpscale, prov };
+  return { content, keyboard, goBack, typing, info };
 }

@@ -13,11 +13,11 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export type SourceType = 'ai' | 'aiComposite' | 'capture' | null;
-export type Provenance = { sourceType: SourceType; hasC2PA: boolean; bytes?: number | null };
+export type Provenance = { sourceType: SourceType; hasC2PA: boolean };
 
 const PREFIX = 256 * 1024;            // ile bajtów nagłówka czytać (XMP/EXIF/C2PA są blisko początku)
 const MAX_CONCURRENT = 3;             // nie czytaj wielu plików naraz (siatka miniatur)
-const CACHE_KEY = 'gallery_ai:provenance';
+const CACHE_KEY = 'gallery_ai:provenance'; // lekka prowieniencja (sourceType/hasC2PA) — zgodny z oryginalnym cache
 
 // base64 → „latin1" (bajt = znak); wystarcza do wyszukania ASCII-owych markerów
 const B64I = (() => {
@@ -70,26 +70,16 @@ function persist() {
   persistT = setTimeout(() => { persistT = null; AsyncStorage.setItem(CACHE_KEY, JSON.stringify(cache ?? {})).catch(() => {}); }, 1500);
 }
 
-async function localFileUri(assetId: string): Promise<string | null> {
-  if (assetId.startsWith('file://')) return assetId;
-  try {
-    const ML: any = await import('expo-media-library');
-    const info = await ML.getAssetInfoAsync(assetId);
-    const u = info?.localUri || info?.uri;
-    if (u) return u;
-  } catch { /* brak dostępu / zły id */ }
-  return assetId.startsWith('content://') ? assetId : null; // ostatnia szansa: czytaj content:// wprost
-}
-
+// LEKKI odczyt: czytamy TYLKO nagłówek pliku (content:// / file://) do klasyfikacji AI/C2PA. Świadomie BEZ
+// `getAssetInfoAsync` — to natywne wywołanie KOPIUJE cały plik zdjęcia do cache (żeby dać localUri), a getProvenance
+// leci dla KAŻDEJ miniatury (badge AI) → kopiowanie N plików = zapaść FPS. Rozmiar pliku pobiera osobno getFileBytes.
 async function compute(assetId: string): Promise<Provenance | undefined> {
-  const uri = await localFileUri(assetId);
+  const uri = /^(file|content):/i.test(assetId) ? assetId : null;
   if (!uri) return undefined;
   try {
     const FS: any = await import('expo-file-system/legacy');
-    let bytes: number | null = null;
-    try { const info = await FS.getInfoAsync(uri, { size: true }); if (typeof info?.size === 'number') bytes = info.size; } catch { /* rozmiar best-effort */ }
     const b64 = await FS.readAsStringAsync(uri, { encoding: 'base64', position: 0, length: PREFIX });
-    return { ...parse(b64ToStr(b64)), bytes };
+    return parse(b64ToStr(b64));
   } catch { return undefined; }
 }
 
@@ -104,3 +94,19 @@ export async function getProvenance(assetId: string): Promise<Provenance> {
 }
 
 export const isAiSource = (t: SourceType) => t === 'ai' || t === 'aiComposite';
+
+// Rozmiar pliku (bajty) — TYLKO dla pojedynczego, otwartego obrazu (panel INFO). getInfoAsync stat-uje plik BEZ
+// kopiowania (w przeciwieństwie do getAssetInfoAsync). Best-effort + cache; content:// może nie zwrócić `size` → null.
+const bytesCache: Record<string, number | null> = {};
+export async function getFileBytes(assetId: string): Promise<number | null> {
+  if (Platform.OS === 'web' || !assetId) return null;
+  if (assetId in bytesCache) return bytesCache[assetId];
+  let bytes: number | null = null;
+  try {
+    const FS: any = await import('expo-file-system/legacy');
+    const info = await FS.getInfoAsync(assetId, { size: true });
+    if (typeof info?.size === 'number') bytes = info.size;
+  } catch { /* best-effort */ }
+  bytesCache[assetId] = bytes;
+  return bytes;
+}

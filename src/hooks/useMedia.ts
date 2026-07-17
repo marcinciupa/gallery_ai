@@ -15,13 +15,16 @@ import { getAiTags } from '../lib/aiTags';
 
 export type MediaStatus = 'idle' | 'loading' | 'denied' | 'ready' | 'error' | 'unsupported';
 
-// Źródło zdjęcia wzbogacone o flagi na etykiety miniatur (extra pola ignorowane przez <Image>).
-export type PhotoSource = { uri: string; raw?: boolean; ai?: boolean };
+// Źródło zdjęcia wzbogacone o flagi + metadane pliku (extra pola ignorowane przez <Image>, czytane przez panel INFO).
+// ⚠️ PERF: wymiary trzymamy pod NIE-standardowymi kluczami mediaWidth/mediaHeight, a NIE width/height — bo width/height
+// to rozpoznawane pola ImageSourcePropType i expo-image dekodowałoby wtedy KAŻDĄ miniaturę w pełnej rozdzielczości
+// oryginału → zapaść pamięci/FPS. mediaWidth/mediaHeight/filename są ignorowane przez expo-image (jak raw/ai).
+export type PhotoSource = { uri: string; raw?: boolean; ai?: boolean; mediaWidth?: number | null; mediaHeight?: number | null; filename?: string | null; creationTime?: number | null };
 
 // Formaty RAW (po rozszerzeniu nazwy pliku). Detekcja best-effort — filename z metadanych, gdy dostępny.
 const RAW_RE = /\.(dng|arw|cr[23w]|nef|nrw|orf|raf|rw2|pef|sr[2fw]|raw|x3f|3fr|fff|iiq|kdc|mos|mrw|dcr|k25)$/i;
-const isRaw = (name?: string) => !!name && RAW_RE.test(name);
-const flag = (m: any, tags: Set<string>): PhotoSource => ({ uri: m.id, raw: isRaw(m.filename), ai: tags.has(m.id) });
+const isRaw = (name?: string | null) => !!name && RAW_RE.test(name);
+const flag = (m: any, tags: Set<string>): PhotoSource => ({ uri: m.id, raw: isRaw(m.filename), ai: tags.has(m.id), mediaWidth: m.width ?? null, mediaHeight: m.height ?? null, filename: m.filename ?? null });
 // count opcjonalny — świadomie NIE liczymy zdjęć na starcie (skan wszystkich metadanych = lawina GC = jank).
 export type MediaFolder = { id: string; name: string; cover?: ImageSourcePropType; count?: number };
 

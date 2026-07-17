@@ -55,6 +55,8 @@ export function useViewerScreen({
   const n = photos.length;
   const source = photos[selected];
   const move = (d: number) => setSelected((i) => Math.max(0, Math.min(n - 1, i + d)));
+  const [immersiveOpen, setImmersiveOpen] = useState(false);
+  useEffect(() => { if (!active) setImmersiveOpen(false); }, [active]); // wyjście z trybu → zamknij immersive
 
   // ten sam pełnoekranowy viewer co w galerii; „open" = tryb aktywny i mamy co pokazać
   const editor = useImageEditor({
@@ -64,9 +66,14 @@ export function useViewerScreen({
     onPrev: () => move(-1),
     onNext: () => move(1),
     onCycleMode,
+    onRequestImmersive: () => setImmersiveOpen(true),
     leftHanded,
     promptBooster,
   });
 
-  return { content: editor.content, keyboard: editor.keyboard, goBack: editor.goBack, typing: editor.typing };
+  const immersive = active && immersiveOpen && source
+    ? { photos, index: selected, setIndex: (i: number) => setSelected(i), close: () => setImmersiveOpen(false), info: editor.info }
+    : null;
+
+  return { content: editor.content, keyboard: editor.keyboard, goBack: editor.goBack, typing: editor.typing, immersive };
 }

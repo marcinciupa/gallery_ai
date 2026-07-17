@@ -145,6 +145,7 @@ const INITIAL_SECTIONS: SectionData[] = [
       // wiersze-akcje: otwierają edytory filtra biblioteki (realne foldery)
       { label: 'INCLUDED FOLDERS', options: ['OPEN'], value: 0, action: true },
       { label: 'EXCLUDED FOLDERS', options: ['OPEN'], value: 0, action: true },
+      { label: 'HIDDEN FOLDERS', options: ['OPEN'], value: 0, action: true },
     ],
   },
   {
@@ -164,9 +165,9 @@ const INITIAL_SECTIONS: SectionData[] = [
   {
     header: 'OTHER',
     items: [
-      { label: 'FULLSCREEN', options: ['OFF', 'ON'], value: 0 }, // domyślnie DEVICE (pracujemy w tym trybie; mock Figmy miał ON)
+      { label: 'FULLSCREEN', options: ['OFF', 'ON'], value: 1 }, // DOMYŚLNIE ON (fullscreen)
       { label: 'LEFT-HANDED MODE', options: ['OFF', 'ON'], value: 0 },
-      { label: 'THEME', options: ['LIGHT', 'DARK', 'ORANGE', 'NAVY'], value: 0 },
+      { label: 'THEME', options: ['LIGHT', 'DARK', 'ORANGE', 'NAVY'], value: 1 }, // DOMYŚLNIE DARK
       { label: 'DISPLAY MATRIX', options: ['OFF', 'ON'], value: 1 }, // matryca ekranu (przeniesione z DIAGNOSTICS)
     ],
   },
@@ -209,8 +210,10 @@ export function useSettingsScreen({
   folders = [],
   included = [],
   excluded = [],
+  hidden = [],
   onToggleIncluded,
   onToggleExcluded,
+  onToggleHidden,
 }: {
   mode?: Mode;
   onCycleMode?: () => void;
@@ -218,12 +221,14 @@ export function useSettingsScreen({
   folders?: { id: string; name: string }[];
   included?: string[];
   excluded?: string[];
+  hidden?: string[];
   onToggleIncluded?: (id: string) => void;
   onToggleExcluded?: (id: string) => void;
+  onToggleHidden?: (id: string) => void;
 } = {}) {
   const [sections, setSections] = useState<SectionData[]>(INITIAL_SECTIONS);
   const [selected, setSelected] = useState(0);
-  const [view, setView] = useState<'MAIN' | 'INCLUDED' | 'EXCLUDED'>('MAIN'); // sub-widoki edytora filtra biblioteki
+  const [view, setView] = useState<'MAIN' | 'INCLUDED' | 'EXCLUDED' | 'HIDDEN'>('MAIN'); // sub-widoki edytora filtra biblioteki
   const [libSel, setLibSel] = useState(0); // kursor w liście folderów sub-widoku
   const [showDiag, setShowDiag] = useState(false); // sekcja DIAGNOSTICS ukryta; odkrywa 10× tapnięcie w stopkę
   const hydrated = useRef(false);
@@ -328,14 +333,14 @@ export function useSettingsScreen({
       }));
     });
   // Edytor filtra biblioteki (INCLUDED/EXCLUDED) — działa na REALnych folderach (prop `folders`).
-  const openSub = (v: 'INCLUDED' | 'EXCLUDED') => { setLibSel(0); setView(v); };
+  const openSub = (v: 'INCLUDED' | 'EXCLUDED' | 'HIDDEN') => { setLibSel(0); setView(v); };
   const goBack = () => { if (view !== 'MAIN') { setView('MAIN'); return true; } return false; };
   const isInc = view === 'INCLUDED';
-  const subSet = isInc ? included : excluded;                 // aktualny zbiór (id folderów)
-  const subToggle = isInc ? onToggleIncluded : onToggleExcluded;
+  const subSet = view === 'INCLUDED' ? included : view === 'HIDDEN' ? hidden : excluded;   // aktualny zbiór (id folderów)
+  const subToggle = view === 'INCLUDED' ? onToggleIncluded : view === 'HIDDEN' ? onToggleHidden : onToggleExcluded;
   const libMove = (d: -1 | 1) => setLibSel((i) => Math.max(0, Math.min(folders.length - 1, i + d)));
   const libToggle = (idx = libSel) => { const f = folders[idx]; if (f) subToggle?.(f.id); };
-  const subFor = (label?: string): 'INCLUDED' | 'EXCLUDED' => (label === 'INCLUDED FOLDERS' ? 'INCLUDED' : 'EXCLUDED');
+  const subFor = (label?: string): 'INCLUDED' | 'EXCLUDED' | 'HIDDEN' => (label === 'INCLUDED FOLDERS' ? 'INCLUDED' : label === 'HIDDEN FOLDERS' ? 'HIDDEN' : 'EXCLUDED');
 
   const changeBy = (dir: -1 | 1) => {
     const it = flatItems[selected];
@@ -366,6 +371,16 @@ export function useSettingsScreen({
     changeAt(idx, 1);
   };
 
+  // Helpery „po labelu" — dla dialogu powitalnego (WelcomeDialog steruje TYMI SAMYMI ustawieniami, trwale).
+  const findByLabel = (label: string) => sections.flatMap((s) => s.items).find((it) => it.label === label);
+  const optionOf = (label: string) => { const it = findByLabel(label); return it ? it.options[it.value] : ''; };
+  const optionsOf = (label: string) => { const it = findByLabel(label); return it ? it.options : []; };
+  const cycleByLabel = (label: string) =>
+    setSections((prev) => prev.map((sec) => ({
+      ...sec,
+      items: sec.items.map((it) => (it.label === label ? { ...it, value: (it.value + 1) % it.options.length } : it)),
+    })));
+
   // Klawisz #1 (jak w rec_ai) — kontekstowy: POKAZUJE wartość, na którą przełączy zaznaczony wiersz.
   //  • wiersz-akcja (INCLUDED/EXCLUDED FOLDERS) → OPEN (otwiera sub-widok)
   //  • przełącznik OFF/ON → TURN ON / TURN OFF (wg stanu)
@@ -383,15 +398,14 @@ export function useSettingsScreen({
         : keyWrap(nextOpt);
   const key1Supporting = selItem && !selItem.action && selItem.options.length > 2 ? '[CYCLE]' : undefined;
 
-  // Klawiatura: nawigacją steruje joystick. 1 = BACK (powrót do GALLERY), 2 = kontekstowa zmiana wartości
-  //   zaznaczonego wiersza (dawny klawisz 1, jak #1 w rec_ai), 5 = NEXT (następny wiersz).
+  // Klawiatura: nawigacją steruje joystick. 1 (lewy ekranowy) = kontekstowa zmiana wartości zaznaczonego wiersza
+  //   (pokazuje docelową wartość, primary), prawy = BACK (powrót do GALLERY; jak BACK w podglądzie). Klawisze 2/4 puste.
   const keyboard: KeyboardConfig = {
     screen: [
+      { label: key1Label, supporting: key1Supporting, variant: 'primary', onPress: () => changeBy(1) },
       { label: 'BACK', onPress: () => { if (!goBack()) onBack?.(); } },
-      { label: 'NEXT', supporting: '[CYCLE]', onPress: () => move(1) },
     ],
-    // 2 = kontekstowa zmiana wartości (dawny klawisz 1, primary); 4 pusty. Nawigacja na joysticku.
-    metal: [{ type: 'label', upper: key1Label, lower: key1Supporting, variant: 'primary', onPress: () => changeBy(1) }, { type: 'label', upper: '' }],
+    metal: [{ type: 'label', upper: '' }, { type: 'label', upper: '' }],
     joystick: {
       highlighted: true,
       repeat: true, // przytrzymanie = powtarzaj (krok co 1)
@@ -419,7 +433,7 @@ export function useSettingsScreen({
       <ScreenTopBar mode={mode} onCycleMode={onCycleMode} />
       <ScrollView style={{ flex: 1, alignSelf: 'stretch' }} contentContainerStyle={{ paddingHorizontal: 16 }} showsVerticalScrollIndicator={false}>
         <View style={{ alignSelf: 'stretch', gap: 8 }}>
-          <SectionHeader>{isInc ? 'INCLUDED FOLDERS' : 'EXCLUDED FOLDERS'}</SectionHeader>
+          <SectionHeader>{`${view} FOLDERS`}</SectionHeader>
           {folders.length === 0 ? (
             <Text style={{ fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: screen.olive.inactive, textAlign: 'center' }}>NO FOLDERS</Text>
           ) : (
@@ -522,6 +536,9 @@ export function useSettingsScreen({
     fullscreen,
     setFullscreen,
     cycleScreenMode,
+    optionOf,
+    optionsOf,
+    cycleByLabel,
     theme,
     leftHanded,
     keepScreenOn,

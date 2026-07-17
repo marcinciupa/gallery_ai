@@ -93,6 +93,21 @@ export function hapticDetent() {
   play([32]);
 }
 
+/** Immersive: subtelny „tick" na tap ekranu (pokaż/schowaj info) — najlżejszy z rodziny. */
+export function hapticTap() {
+  play([12]);
+}
+
+/** Immersive: wejście (zoom-in) — miękki, narastający impuls („wchodzę w głąb"). */
+export function hapticZoomIn() {
+  play(pwm([{ ms: 90, from: 0.15, to: 0.55 }]));
+}
+
+/** Immersive: wyjście (zoom-out) — krótszy, opadający impuls (odróżnialny od wejścia). */
+export function hapticZoomOut() {
+  play(pwm([{ ms: 60, from: 0.5, to: 0.1 }]));
+}
+
 /**
  * Knob — powrót do stanu 0 (zawsze, też dla nieaktywnego knoba).
  *  - nieaktywny → POJEDYNCZY krótki tick (1:1 z klawiaturą, hapticShort/Release = 45 ms),
