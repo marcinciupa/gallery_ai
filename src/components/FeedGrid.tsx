@@ -194,6 +194,10 @@ export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function 
     return out;
   }, [win, pos, step, inset, cell, gap]);
   const lastY = useRef(0);
+  // `lastY` jest CELOWO throttlowane (aktualizowane co wiersz — steruje oknem wirtualizacji i kierunkiem),
+  // więc bywa nieaktualne nawet o cały wiersz. `curY` to pozycja RZECZYWISTA, aktualizowana na każde
+  // zdarzenie scrolla — od niej liczymy kotwicę joysticka, inaczej zaznaczenie po zatrzymaniu wypada obok.
+  const curY = useRef(0);
   const userScrolling = useRef(false);          // trwa realny swipe/momentum (NIE programowy) → settle na jego końcu
   const settleT = useRef<ReturnType<typeof setTimeout> | null>(null); // fallback settle, gdy po drag NIE ma momentum
   const skipAutoOnce = useRef(false);           // po swipe NIE re-centruj (kursor już na kaflu pod środkiem; inaczej „skacze")
@@ -236,6 +240,7 @@ export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function 
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     scrollFlag.at = Date.now(); // PerfHud: zatrzaskuj minimum tylko przy świeżym przewijaniu
     const y = e.nativeEvent.contentOffset.y;
+    curY.current = y;
     if (Math.abs(y - lastY.current) >= step) {
       scrollDir.current = y >= lastY.current ? 1 : -1; // kierunek USTAL PRZED nadpisaniem lastY
       lastY.current = y;
@@ -283,7 +288,7 @@ export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function 
     navAnchor.current = null;
     onScrollActive?.(false);
     if (!a || !onSelectAt) return;
-    const r = Math.max(0, Math.floor((lastY.current + a.top - inset) / step));
+    const r = Math.max(0, Math.floor((curY.current + a.top - inset) / step));
     let idx = cellGrid[r]?.[a.col];
     for (let d = 1; idx == null && d < cols; d++) idx = cellGrid[r]?.[a.col - d] ?? cellGrid[r]?.[a.col + d];
     for (let dr = 1; idx == null && dr <= 2; dr++) idx = cellGrid[r + dr]?.[a.col] ?? cellGrid[r - dr]?.[a.col];
@@ -294,6 +299,7 @@ export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function 
     const maxY = Math.max(0, totalH - viewH);
     const target = Math.max(0, Math.min(maxY, y));
     lastY.current = target;
+    curY.current = target;
     setWindow(target, viewH);
     scrollFlag.at = Date.now(); // PerfHud: to też jest przewijanie
     try { scrollRef.current?.scrollTo({ y: target, animated }); } catch {}
@@ -307,7 +313,7 @@ export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function 
     if (!navAnchor.current) return;
     const dt = navPrevT.current ? (t - navPrevT.current) / 1000 : 0;
     navPrevT.current = t;
-    scrollToY(lastY.current + navDir.current * CRUISE_ROWS_PER_SEC * step * dt, false);
+    scrollToY(curY.current + navDir.current * CRUISE_ROWS_PER_SEC * step * dt, false);
     navRaf.current = requestAnimationFrame(navTick);
   };
 
@@ -316,12 +322,17 @@ export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function 
     navDir.current = dir;
     if (navAnchor.current) return; // już jedziemy
     const p = pos[selRef.current];
-    navAnchor.current = p
-      ? { top: p.r * step + inset - lastY.current, col: p.c }
-      : { top: viewH / 2, col: cols === 3 ? 1 : 0 };
+    // Kotwica MUSI leżeć w widocznym pasmie. Zaznaczony kafel bywa poza ekranem (po swipie palcem,
+    // po powrocie z podglądu) — bez przycięcia kotwica wiernie odtwarzała tę pozycję i zaznaczenie
+    // po zatrzymaniu lądowało poza kadrem.
+    const rawTop = p ? p.r * step + inset - curY.current : viewH / 2;
+    navAnchor.current = {
+      top: Math.max(0, Math.min(Math.max(0, viewH - step), rawTop)),
+      col: p ? p.c : cols === 3 ? 1 : 0,
+    };
     onScrollActive?.(true); // chowa ramkę kursora na czas ruchu
     if (navT.current) clearTimeout(navT.current);
-    scrollToY(lastY.current + dir * step, true); // tap = jeden wiersz
+    scrollToY(curY.current + dir * step, true); // tap = jeden wiersz
     navT.current = setTimeout(() => {            // trzymanie → płynnie
       navPrevT.current = 0;
       navRaf.current = requestAnimationFrame(navTick);
