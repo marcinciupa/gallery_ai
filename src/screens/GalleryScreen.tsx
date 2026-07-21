@@ -171,21 +171,41 @@ function GalleryMenu({ index, onPick, items = MENU_ITEMS, leftHanded = false }: 
     >
       {items.map((label, i) => {
         const sel = i === index;
-        // każdy wiersz ma tę samą strukturę (bullet + label + padding) → szerokość menu = najszerszy label,
-        // stała niezależnie od zaznaczenia (bullet przezroczysty, gdy niezaznaczony — rezerwuje miejsce).
+        // Bullet TYLKO przy zaznaczonej pozycji (Figma 360:5309) — i tylko tam przesuwa etykietę w prawo.
+        // Niezaznaczone etykiety zaczynają się przy samej krawędzi, na równi z lewym brzegiem pigułki;
+        // rezerwowanie miejsca PRZED nimi dałoby wcięcie, którego w projekcie nie ma.
+        // Żeby przy tym szerokość CAŁEGO menu nie skakała przy przesuwaniu zaznaczenia, niezaznaczone
+        // wiersze dostają rezerwę o szerokości bulletu na KOŃCU. Rezerwą jest ten sam <Text> z opacity 0,
+        // więc mierzy się co do piksela tak samo (zgadywanie stałej szerokości by się rozjechało).
+        // Ukrywanie przez `color: 'transparent'` NIE działa — tak było wcześniej i kropka i tak się rysowała.
         return (
           <Pressable
             key={label}
             onPress={() => onPick(i)}
             style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', paddingVertical: 2, paddingRight: 4, paddingLeft: 2, borderRadius: 2, backgroundColor: sel ? color.dark21 : 'transparent' }}
           >
-            <Text style={{ ...txt, color: sel ? screen.olive.primary : 'transparent', ...(sel ? phosphorGlow : null) }}>{'•'}</Text>
+            {sel ? <Text style={{ ...txt, color: screen.olive.primary, ...phosphorGlow }}>{'•'}</Text> : null}
             <Text style={{ ...txt, color: sel ? screen.olive.primary : color.dark21, ...(sel ? phosphorGlow : null) }}>{label}</Text>
+            {sel ? null : (
+              <View style={{ opacity: 0 }}>
+                <Text style={txt}>{'•'}</Text>
+              </View>
+            )}
           </Pressable>
         );
       })}
     </View>
   );
+}
+
+/**
+ * Zasłona pod MENU: blokuje dotyk poza menu (wcześniej dało się przeklikać apkę przy otwartym menu)
+ * i przyciemnia treść, żeby zdjęcia pod spodem miały ~25% widoczności.
+ * `Pressable` z pustym handlerem jest tu celowy — zwykły `View` NIE przechwytuje dotyku (nie zostaje
+ * responderem), więc dotknięcia i tak trafiałyby w siatkę pod spodem.
+ */
+function MenuScrim() {
+  return <Pressable onPress={() => {}} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.75)' }} />;
 }
 
 // KOSZ (app-level, soft-delete): usuwanie = przeniesienie do kosza (pliki zostają na dysku, tylko ukryte).
@@ -207,7 +227,11 @@ function SelectMenu({
   // robiąc miejsce na menu. Jak pasek EDIT: gap 16 między poziomami; pod-pasek (podopcje) na górze, główny na dole.
   return (
     <View style={{ alignSelf: 'stretch', gap: 16 }}>
-      <MenuBar items={subItems} index={subIdx} focused={focus === 1} onPick={onPickSub} riskLabels={riskLabels} />
+      {/* Poziom 2 odsłania się DOPIERO po zatwierdzeniu pozycji poziomu 1 (press na joysticku lub tap).
+          Wcześniej całe drzewko było widoczne od razu. Powrót zwija poziom (joystick w dół lub BACK). */}
+      {focus === 1 ? (
+        <MenuBar items={subItems} index={subIdx} focused onPick={onPickSub} riskLabels={riskLabels} />
+      ) : null}
       <MenuBar items={rootItems} index={rootIdx} focused={focus === 0} onPick={onPickRoot} />
     </View>
   );
@@ -215,14 +239,42 @@ function SelectMenu({
 
 // OVERLAY potwierdzenia/wyniku (à la rec_ai PlaybackScreen) — nakładka na całą treść ekranu. `tone`:
 // 'red' = destrukcyjne (trwałe kasowanie), 'phosphor' = neutralne (do kosza / wynik).
+/**
+ * Wielki panel-nakładka nad treścią: CONFIRM (czerwony) / DELETED (phosphor).
+ * Wzorzec z rec_ai (Figma 130:4623 „recordings/delete-confirm") — apki dzielą system wizualny.
+ *
+ * CZYTELNOŚĆ: wcześniej był tu kolorowy tekst z poświatą na półprzezroczystej czerni
+ * (rgba(0,0,0,0.55)) — nad gęstą siatką zdjęć zdjęcia przebijały przez tło, a jasny tekst z glow
+ * zlewał się z nimi. Teraz odwrotnie: PEŁNE tło w kolorze akcentu i CIEMNY tekst na nim, czyli
+ * maksymalny kontrast niezależnie od tego, co jest pod spodem.
+ *
+ * `top: 48` zostawia widoczny pasek statusu ekranu — komunikat ma przykryć treść, nie kontekst.
+ */
 function OverlayPanel({ tone, title, sub }: { tone: 'red' | 'phosphor'; title: string; sub?: string }) {
-  const fg = tone === 'red' ? '#FF6B6B' : screen.olive.primary;
-  const t = { fontFamily: font.bodyLgBold.family, fontSize: font.bodyLgBold.size, color: fg, textAlign: 'center' as const, ...phosphorGlow, textShadowColor: color.dark21 };
-  const s = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: fg, textAlign: 'center' as const, opacity: 0.85 };
+  const bg = tone === 'phosphor' ? screen.olive.primary : color.recordRed;
+  const sh = tone === 'phosphor' ? 'rgba(226,255,228,0.25)' : 'rgba(255,76,76,0.25)';
   return (
-    <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24, gap: 8, backgroundColor: 'rgba(0,0,0,0.55)' }}>
-      <Text style={t}>{title}</Text>
-      {sub ? <Text style={s}>{sub}</Text> : null}
+    <View
+      pointerEvents="none"
+      style={
+        {
+          position: 'absolute',
+          top: 48,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          borderRadius: 4,
+          backgroundColor: bg,
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 24,
+          gap: 8,
+          boxShadow: `0px 0px 8px 0px ${sh}`,
+        } as any
+      }
+    >
+      <Text style={{ fontFamily: font.timer.family, fontSize: 24, lineHeight: 30, color: color.dark21, textAlign: 'center' }}>{title}</Text>
+      {sub ? <Text style={{ fontFamily: font.monoBody.family, fontSize: 12, color: color.dark21, textAlign: 'center' }}>{sub}</Text> : null}
     </View>
   );
 }
@@ -676,11 +728,13 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     else setSelSub((s) => { const len = subItems.length; return (s + d + len) % len; });
   };
   // ↑ (d=-1) → pod-pasek (focus 1, góra); ↓ (d=+1) → pasek główny (focus 0, dół) — spójnie z układem i z EDIT.
-  const selMoveV = (d: -1 | 1) => setSelFocus(d < 0 ? 1 : 0);
+  // W GÓRĘ nie odsłania poziomu 2 — do tego służy zatwierdzenie (press). W DÓŁ zwija z powrotem.
+  const selMoveV = (d: -1 | 1) => { if (d > 0) setSelFocus(0); };
 
   // back: kolejno zamknij MENU → (edytor: menu edycji/pod-widok, a na końcu podgląd) → folder → feed
   const goBack = () => {
     if (delPhase === 'confirm') { cancelDelete(); return true; }
+    if (selectMode && selFocus === 1) { setSelFocus(0); return true; } // najpierw zwiń poziom 2
     if (selectMode) { exitSelect(); return true; }
     if (menuOpen) { setMenuOpen(false); return true; }
     if (viewerOpen) { if (!editor.goBack()) setViewerOpen(false); return true; }
@@ -952,7 +1006,12 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
       </View>
 
       {/* MENU (popover) — nad siatką, gdy nie ma podglądu; podąża za klawiszem MENU (left-handed → lewy róg) */}
-      {menuOpen && !viewerOpen ? <GalleryMenu index={menuIndex} onPick={pickMenu} items={menuLabels} leftHanded={leftHanded} /> : null}
+      {menuOpen && !viewerOpen ? (
+        <>
+          <MenuScrim />
+          <GalleryMenu index={menuIndex} onPick={pickMenu} items={menuLabels} leftHanded={leftHanded} />
+        </>
+      ) : null}
 
       {/* TRYB ZAZNACZANIA — dwupoziomowe menu (SELECT/ACTION) w rogu; overlay potwierdzenia/wyniku usuwania na wierzchu */}
       {selectMode && !viewerOpen ? (
@@ -977,9 +1036,21 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // „fullscreen_view/edit"). Inaczej: siatka + klawiatura galerii.
   // MENU (kontekstowe menu galerii) można otworzyć też NAD podglądem: wtedy popover + klawiatura galerii
   // (nawigacja joystickiem, CLOSE MENU) przejmują sterowanie, a treść podglądu zostaje pod spodem.
-  const finalContent = viewerOpen
-    ? (menuOpen ? <>{editor.content}<GalleryMenu index={menuIndex} onPick={pickMenu} items={menuLabels} leftHanded={leftHanded} /></> : editor.content)
-    : content;
+  // STRUKTURA DRZEWA MUSI BYĆ STAŁA. Wcześniej przy zamkniętym menu treścią był goły element, a przy
+  // otwartym — fragment; React widział w tym miejscu inny typ węzła, odmontowywał całe poddrzewo
+  // podglądu i obrazek ładował się od nowa. Teraz zawsze fragment, menu tylko dochodzi jako drugie
+  // dziecko, więc `editor.content` zostaje na swojej pozycji i nie jest przemontowywany.
+  const finalContent = viewerOpen ? (
+    <>
+      {editor.content}
+      {menuOpen ? (
+        <>
+          <MenuScrim />
+          <GalleryMenu index={menuIndex} onPick={pickMenu} items={menuLabels} leftHanded={leftHanded} />
+        </>
+      ) : null}
+    </>
+  ) : content;
   const finalKeyboard = delPhase !== 'none' ? confirmKeyboard : selectMode ? selectKeyboard : menuOpen ? keyboard : viewerOpen ? editor.keyboard : keyboard;
 
   return { content: finalContent, keyboard: finalKeyboard, goBack, pinchColumns, showModeToast, showExitToast, viewerOpen, menuOpen, selectMode, allFolders, immersive, typing: viewerOpen ? editor.typing : false };

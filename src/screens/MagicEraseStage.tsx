@@ -17,6 +17,8 @@ const FIRST_TABS = ['MODE', 'BRUSH SIZE', 'REMOVE BACKGROUND'] as const;
 export type MagicEraseState = { applied: boolean; hasSelection: boolean; removeBg: boolean; processing: boolean };
 export type MagicEraseHandle = {
   navLeft: () => void; navRight: () => void; navUp: () => void; navDown: () => void; press: () => void;
+  /** BACK: zwiń poziom 2 do poziomu 1. Zwraca true, jeśli było co zwijać (wtedy BACK nie zamyka widoku). */
+  collapse: () => boolean;
   apply: () => void; // erase (maska) albo remove-background (zależnie od zakładki)
   undo: () => void;
   reset: () => void;
@@ -61,15 +63,17 @@ export const MagicEraseStage = forwardRef<MagicEraseHandle, {
   useImperativeHandle(ref, () => ({
     navLeft: () => { if (levelRef.current === 'second') maskRef.current?.navValue(-1); else setFirst((i) => Math.max(0, i - 1)); },
     navRight: () => { if (levelRef.current === 'second') maskRef.current?.navValue(1); else setFirst((i) => Math.min(FIRST_TABS.length - 1, i + 1)); },
-    navUp: () => { if (firstRef.current !== 2) setLevel('second'); },
+    navUp: () => {}, // w górę NIE odsłania poziomu 2 — do tego służy zatwierdzenie (press/tap)
     navDown: () => setLevel('first'),
     press: () => { if (levelRef.current === 'first' && firstRef.current !== 2) setLevel('second'); },
+    collapse: () => { if (levelRef.current === 'second') { setLevel('first'); return true; } return false; },
     apply: () => { void doApply(); },
     undo: () => maskRef.current?.undo(),
     reset: () => { maskRef.current?.reset(); setApplied(false); onResult?.(null); },
   }), [baseUri]);
 
-  const panel = first === 0 ? 'mode' : first === 1 ? 'size' : null;
+  // Poziom 2 odsłania się DOPIERO po zatwierdzeniu zakładki (patrz AiStage — ta sama zasada).
+  const panel = level !== 'second' ? null : first === 0 ? 'mode' : first === 1 ? 'size' : null;
 
   return (
     <View style={{ flex: 1, alignSelf: 'stretch', gap: 16 }}>

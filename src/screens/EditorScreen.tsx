@@ -455,6 +455,9 @@ export function useImageEditor({
     if (processing || boosting || magic.processing) return true;   // w trakcie boostu/edycji/wypełniania/erase AI back nic nie robi (blokada)
     if (fillOffer) { setFillOffer(false); return true; }
     if (typing) { setTyping(false); return true; }
+    // BACK najpierw ZWIJA poziom 2 menu (pasek trybów / pokrętło pędzla), dopiero potem wychodzi z widoku.
+    if (magicRef.current?.collapse()) return true;
+    if (aiMaskRef.current?.collapse()) return true;
     if (infoOpen) { setInfoOpen(false); return true; }
     if (view !== 'viewer') { setView('viewer'); return true; }
     if (menuOpen) { setMenuOpen(false); return true; }

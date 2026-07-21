@@ -25,6 +25,8 @@ const BRUSH_TABS = ['MODE', 'BRUSH SIZE'] as const;
 
 export type AiStageHandle = {
   navLeft: () => void; navRight: () => void; navUp: () => void; navDown: () => void; press: () => void;
+  /** BACK: zwiń poziom 2 do poziomu 1. Zwraca true, jeśli było co zwijać (wtedy BACK nie zamyka widoku). */
+  collapse: () => boolean;
   undo: () => void;
   reset: () => void;
 };
@@ -52,15 +54,18 @@ export const AiStage = forwardRef<AiStageHandle, {
   useImperativeHandle(ref, () => ({
     navLeft: () => { if (levelRef.current === 'second') maskRef.current?.navValue(-1); else setFirst((i) => Math.max(0, i - 1)); },
     navRight: () => { if (levelRef.current === 'second') maskRef.current?.navValue(1); else setFirst((i) => Math.min(BRUSH_TABS.length - 1, i + 1)); },
-    navUp: () => setLevel('second'),
+    navUp: () => {}, // w górę NIE odsłania poziomu 2 — do tego służy zatwierdzenie (press/tap)
     navDown: () => setLevel('first'),
     press: () => { if (levelRef.current === 'first') setLevel('second'); },
+    collapse: () => { if (levelRef.current === 'second') { setLevel('first'); return true; } return false; },
     undo: () => maskRef.current?.undo(),
     reset: () => { maskRef.current?.reset(); setMasking(false); },
   }), []);
 
   const inputText = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: color.dark21, padding: 0 } as const;
-  const panel = typing ? null : first === 0 ? 'mode' : 'size';
+  // Poziom 2 (pasek trybów / pokrętło pędzla) odsłania się DOPIERO po zatwierdzeniu zakładki — wcześniej
+  // wynikał z samej zakładki, więc całe drzewko było widoczne od razu.
+  const panel = typing || level !== 'second' ? null : first === 0 ? 'mode' : 'size';
 
   // Podczas pisania PODNIEŚ zawartość (z polem promptu na dole) o wysokość klawiatury — inaczej na części
   // urządzeń (edge-to-edge, gdzie adjustResize zawodzi) systemowa klawiatura zasłania input. Odejmujemy dolny
