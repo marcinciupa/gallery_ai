@@ -8,7 +8,8 @@
  *   • 1 palec @ zoom  → pan powiększonego obrazu (klamrowany do jego krawędzi),
  *   • 1 palec @ 100%  → swipe zmiany zdjęcia (pager 3 slotów: prev/current/next),
  *   • swipe-up        → pokaż info: obszar obrazu kurczy się (contain → pełna szerokość) i panel INFO wjeżdża POD
- *                       spodem (Figma 450:1516); swipe-down = schowaj; tap NIE pokazuje info; tap w pas CLOSE (gdy info) = wyjście,
+ *                       spodem (Figma 450:1516); swipe-down = schowaj info, a gdy info schowane → ZAMKNIJ widok;
+ *                       tap NIE pokazuje info; tap w pas CLOSE (gdy info) = wyjście,
  *   • pinch-in ponizej 100% → WYJŚCIE. „Dwa poziomy" wychodzą JEDNĄ regułą: puszczenie pod progiem zamyka,
  *     wolny pinch z 200% zwalnia i zaczepia na 100% (poziom 1), kolejny/mocniejszy pinch schodzi pod próg i
  *     zamyka (poziom 2). Szybki mocny pinch przelatuje pod próg od razu → zamyka bez zatrzymania na 100%.
@@ -224,10 +225,12 @@ export function ImmersiveViewer({
         pageNum.current = -idx * w;
         return;
       }
-      // pionowy swipe → pokaż (w górę) / schowaj (w dół) info — jak swipe-up w podglądzie w ramce
+      // pionowy swipe (przy 100% — zoom łapie gest wcześniej). W górę = pokaż info. W dół = schowaj info,
+      // a gdy info już schowane → ZAMKNIJ real fullscreen (dwustopniowo: najpierw info, potem widok).
       if (Math.abs(g.dy) > Math.abs(g.dx) && Math.abs(g.dy) > SWIPE_TH) {
         if (g.dy < 0) { if (!env.current.open) { hapticTap(); env.current.setOpen(true); } }
-        else { if (env.current.open) { hapticTap(); env.current.setOpen(false); } }
+        else if (env.current.open) { hapticTap(); env.current.setOpen(false); }
+        else { doClose(); return; } // swipe-down przy schowanym info → wyjście z widoku
         Animated.spring(pageX, { toValue: -idx * w, useNativeDriver: false }).start();
         pageNum.current = -idx * w;
         return;
