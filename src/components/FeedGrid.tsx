@@ -6,13 +6,22 @@
  * w ScrollView o policzonej wysokości, a renderujemy tylko te w oknie widoku (+bufor) — mount ≈ ekran, nie N.
  * (Pakowanie/filtr to tania arytmetyka O(N); ciężką rzeczą jest mount Views, który okno ogranicza.)
  */
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, ScrollView, ImageSourcePropType, LayoutChangeEvent, NativeSyntheticEvent, NativeScrollEvent } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import Svg, { Polygon } from 'react-native-svg';
 import { color, font, screen } from '../theme/tokens';
+import { scrollFlag } from './PerfHud';
 
 export const FEED_GAP = 8;
+
+/** Uchwyt imperatywny: joystick przewija feed o STAŁY krok (patrz `nudge`). */
+export type FeedGridHandle = {
+  /** Joystick wychylony w pionie → zacznij ruch (najpierw jeden wiersz, potem płynny przesuw). */
+  navStart: (dir: -1 | 1) => void;
+  /** Joystick puszczony → zatrzymaj i wybierz kafel spod kotwicy. */
+  navEnd: () => void;
+};
 
 /**
  * Grid-occupancy packer: kwadratowe kafle K×K na siatce `cols`. Dla każdego kafla szukamy PIERWSZEGO wolnego
@@ -48,18 +57,50 @@ export function packFeed(spans: number[], cols: number): { pos: { r: number; c: 
   return { pos, rows };
 }
 
+// PERF: przyjmuje `index` + callbacki index-owe (STABILNE między renderami FeedGrid), żeby `memo` trzymał podczas
+// scrolla. Wcześniej domknięcia `() => onOpen(i)` były nowe co render → memo się psuł → przerysowanie WSZYSTKICH
+// widocznych kafli na każdy krok scrolla (drogie przy dużych ExpoImage 2×/3× = lokalny spadek fps).
 const FeedTile = memo(function FeedTile({
-  source, x, y, size, selected, images, onOpen, onCycle, onLongPress, selectMode, check,
+  index, source, x, y, size, span, lowQ, selected, images, onOpen, onCycle, onLongPress, selectMode, check,
 }: {
-  source?: ImageSourcePropType; x: number; y: number; size: number; selected?: boolean; images?: boolean;
-  onOpen?: () => void; onCycle?: () => void; onLongPress?: () => void; selectMode?: boolean; check?: boolean | null;
+  index: number; source?: ImageSourcePropType; x: number; y: number; size: number; span: number; lowQ?: boolean;
+  selected?: boolean; images?: boolean;
+  onOpen?: (i: number) => void; onCycle?: (i: number) => void; onLongPress?: (i: number) => void; selectMode?: boolean; check?: boolean | null;
 }) {
   const overlay = { position: 'absolute' as const, top: 0, left: 0, right: 0, bottom: 0, borderRadius: 2 };
   return (
-    <Pressable onPress={onOpen} onLongPress={onLongPress} delayLongPress={350} style={{ position: 'absolute', left: x, top: y, width: size, height: size }}>
+    <Pressable onPress={() => onOpen?.(index)} onLongPress={onLongPress ? () => onLongPress(index) : undefined} delayLongPress={350} style={{ position: 'absolute', left: x, top: y, width: size, height: size }}>
       <View style={{ flex: 1, borderRadius: 2, overflow: 'hidden' }}>
         {images && source ? (
-          <ExpoImage source={source} contentFit="cover" cachePolicy="memory-disk" style={{ width: '100%', height: '100%' }} />
+          // LQIP dla POWIĘKSZONYCH kafli. `expo-image` dobiera rozmiar dekodowania do rozmiaru UKŁADU
+          // (allowDownscaling domyślnie on), więc kafel 3× dekoduje ~9× więcej pikseli niż 1× — jeden taki
+          // wjeżdżający w kadr blokował klatkę (zmierzone: dip do 24 fps, po naprawie ~76).
+          //
+          // DWIE WARSTWY, nie przełączanie stylu jednej: warstwa 1× jest zamontowana ZAWSZE i nigdy nie
+          // zmienia rozmiaru układu, więc nigdy się nie przedekodowuje. Pełna rozdzielczość dokłada się
+          // NAD nią dopiero po zatrzymaniu. Wariant z jednym <ExpoImage> i podmianą stylu wymuszał DWA
+          // dodatkowe dekodowania na każdy gest (na 1× przy starcie, na pełny przy stopie).
+          span > 1 ? (
+            <>
+              <ExpoImage
+                source={source}
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                style={{ width: size / span, height: size / span, transform: [{ scale: span }], transformOrigin: 'top left' } as any}
+              />
+              {!lowQ ? (
+                <ExpoImage
+                  source={source}
+                  contentFit="cover"
+                  cachePolicy="memory-disk"
+                  transition={120} // łagodne wyostrzenie zamiast skoku
+                  style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
+                />
+              ) : null}
+            </>
+          ) : (
+            <ExpoImage source={source} contentFit="cover" cachePolicy="memory-disk" style={{ width: '100%', height: '100%' }} />
+          )
         ) : (
           <View style={{ flex: 1, backgroundColor: '#3A3A3A' }} />
         )}
@@ -71,7 +112,7 @@ const FeedTile = memo(function FeedTile({
           <View pointerEvents="none" style={{ ...overlay, borderWidth: 2, borderColor: screen.olive.primary }} />
           {/* uchwyt zmiany rozmiaru — trójkąt w prawym-dolnym rogu (ukryty w trybie zaznaczania) */}
           {!selectMode ? (
-            <Pressable onPress={onCycle} hitSlop={8} style={{ position: 'absolute', right: 3, bottom: 3, padding: 3 }}>
+            <Pressable onPress={() => onCycle?.(index)} hitSlop={8} style={{ position: 'absolute', right: 3, bottom: 3, padding: 3 }}>
               <Svg width={12} height={12}>
                 <Polygon points="0,12 12,0 12,12" fill={screen.olive.primary} />
               </Svg>
@@ -89,14 +130,13 @@ const FeedTile = memo(function FeedTile({
   );
 });
 
-export const FeedGrid = memo(function FeedGrid({
-  data, cols, width, spans, selected, images = true, onCycleSpan, onOpen, onSelectAt, onScrollActive, selectMode, checkedAt, onLongPressAt,
-}: {
+type FeedGridProps = {
   data: ImageSourcePropType[];
   cols: number;
   width: number;
   spans: Record<number, number>;
-  selected: number;
+  selected: number;              // REALNY kursor (cel auto-scrolla) — NIE chowany, inaczej scroll traci cel
+  hideCursor?: boolean;          // chowaj tylko RAMKĘ (swipe/hold) — scroll dalej podąża za `selected`
   images?: boolean;
   onCycleSpan: (i: number) => void;
   onOpen: (i: number) => void;
@@ -105,7 +145,11 @@ export const FeedGrid = memo(function FeedGrid({
   selectMode?: boolean;                       // tryb zaznaczania → checkbox zamiast uchwytu, tap = toggle
   checkedAt?: (i: number) => boolean;         // czy kafel i jest zaznaczony
   onLongPressAt?: (i: number) => void;        // long-press → wejście w tryb zaznaczania (z tym kaflem)
-}) {
+};
+
+export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function FeedGrid({
+  data, cols, width, spans, selected, hideCursor, images = true, onCycleSpan, onOpen, onSelectAt, onScrollActive, selectMode, checkedAt, onLongPressAt,
+}: FeedGridProps, ref) {
   // Geometria 1:1 z gallery view: kolumna = width/cols (pitch), kafel 1× = kolumna − gap, margines zewn. = gap/2
   // (odpowiednik `padding: gap/2` na kaflach FlatListy). Dzięki temu feed ma tę samą szerokość i marginesy.
   const gap = FEED_GAP;
@@ -128,39 +172,178 @@ export const FeedGrid = memo(function FeedGrid({
   const scrollRef = useRef<ScrollView>(null);
   const [viewH, setViewH] = useState(0);
   const [win, setWin] = useState({ top: 0, bottom: 0 });
-  const lastY = useRef(0);
-  const userScrolling = useRef(false);          // trwa swipe/momentum → auto-scroll wyłączony (nie walczy ze swipem)
-  const scrollStopT = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingSel = useRef<number | null>(null); // kafel pod środkiem — ustawiany w `selected` DOPIERO po zatrzymaniu
+  // Reaktywny stan przewijania (obok refa `userScrolling`) — steruje LQIP powiększonych kafli.
+  // Zmienia się DWA razy na gest (start/stop), nie per klatka, więc nie wraca problem re-renderów.
+  const [scrolling, setScrolling] = useState(false);
 
+  // Lista indeksów WIDOCZNYCH kafli. Zwykłe liniowe przemiatanie `pos` z odsiewem — ZMIERZONE jako
+  // szybsze od wariantu „sprytnego", który liczył okno z `cellGrid` (wiersz → indeksy) i na papierze miał
+  // lepszą złożoność: 51 vs 41 fps min, A/B przełącznikiem w JEDNEJ sesji (2026-07-21).
+  // Pętla po płaskiej tablicy z prostą arytmetyką jest dla silnika JS znacznie wdzięczniejsza niż
+  // tablica 2D + Set + sort. NIE „optymalizować" tego z powrotem bez pomiaru.
+  // (Względem pierwotnego `pos.map(...)` z `return null` oszczędzamy alokację N-elementowej tablicy.)
+  const visible = useMemo(() => {
+    const out: number[] = [];
+    for (let i = 0; i < pos.length; i++) {
+      const p = pos[i];
+      const y = p.r * step + inset;
+      const size = p.k * cell + (p.k - 1) * gap;
+      if (y + size < win.top || y > win.bottom) continue;
+      out.push(i);
+    }
+    return out;
+  }, [win, pos, step, inset, cell, gap]);
+  const lastY = useRef(0);
+  const userScrolling = useRef(false);          // trwa realny swipe/momentum (NIE programowy) → settle na jego końcu
+  const settleT = useRef<ReturnType<typeof setTimeout> | null>(null); // fallback settle, gdy po drag NIE ma momentum
+  const skipAutoOnce = useRef(false);           // po swipe NIE re-centruj (kursor już na kaflu pod środkiem; inaczej „skacze")
+
+  // PERF: stabilne callbacki (index-owe) trzymane w refie → FeedTile memo nie psuje się co render FeedGrid.
+  const cbRef = useRef({ onOpen, onCycleSpan, onLongPressAt });
+  cbRef.current = { onOpen, onCycleSpan, onLongPressAt };
+  const openTile = useCallback((i: number) => cbRef.current.onOpen(i), []);
+  const cycleTile = useCallback((i: number) => cbRef.current.onCycleSpan(i), []);
+  const longTile = useCallback((i: number) => cbRef.current.onLongPressAt?.(i), []);
+
+  const selRef = useRef(selected); selRef.current = selected;
+  // Bufor wirtualizacji NIESYMETRYCZNY, zależny od kierunku przewijania. Kafel zaczyna dekodować obraz
+  // w momencie ZAMONTOWANIA, więc bufor = wyprzedzenie, jakie dajemy dekodowaniu. Symetryczne 2 wiersze
+  // marnowały połowę zapasu za plecami użytkownika; teraz 4 wiersze W PRZÓD (tam, gdzie kafle zaraz
+  // wjadą w kadr) i 1 wstecz. Łącznie montujemy tylko o wiersz więcej niż wcześniej.
+  const scrollDir = useRef(1); // 1 = w dół, -1 = w górę
   const setWindow = (y: number, vh: number) => {
-    const buf = step * 2;
-    setWin({ top: y - buf, bottom: y + vh + buf });
+    const ahead = step * 4;
+    const behind = step * 1;
+    const down = scrollDir.current >= 0;
+    setWin({ top: y - (down ? behind : ahead), bottom: y + vh + (down ? ahead : behind) });
   };
-  // userScrolling ustawiamy TYLKO z realnego drag (onScrollBeginDrag) — programowy scrollTo (auto-scroll joysticka)
-  // też odpala onScroll, ale NIE onScrollBeginDrag, więc nie blokuje wtedy auto-scrollu ani nie „podąża".
-  const onScrollBeginDrag = () => { userScrolling.current = true; onScrollActive?.(true); if (scrollStopT.current) clearTimeout(scrollStopT.current); };
-  const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const y = e.nativeEvent.contentOffset.y;
-    if (Math.abs(y - lastY.current) >= step) { lastY.current = y; setWindow(y, viewH); } // przelicz okno raz na wiersz
-    if (!userScrolling.current) return; // scroll programowy → tylko okno wirtualizacji; bez podążania i blokady
-    if (scrollStopT.current) clearTimeout(scrollStopT.current); // reset flagi po chwili ciszy (koniec swipe+momentum)
-    // PERF: kursor jest schowany podczas swipe (onScrollActive), więc NIE wołamy setSelected na każde zdarzenie
-    // scrolla (to re-renderowało cały GalleryScreen ~30×/s = okresowe spadki fps). Zapamiętujemy kafel pod środkiem
-    // i ustawiamy `selected` RAZ, po zatrzymaniu — dokładnie gdy kursor wraca.
+  // KONIEC swipe (dokładny, ze zdarzeń RN): kafel pod ŚRODKIEM z FINALNEJ pozycji → ustaw `selected` RAZ i pokaż kursor.
+  // Wcześniej: heurystyczny timer 160 ms + środek z ostatniego (nieprecyzyjnego) onScroll → kursor „nie mógł się zdecydować".
+  const settle = (y: number) => {
+    userScrolling.current = false;
+    setScrolling(false);
+    onScrollActive?.(false);
     if (onSelectAt && viewH > 0) {
       const r = Math.max(0, Math.floor((y + viewH / 2 - inset) / step));
       const idx = cellGrid[r]?.[cols === 3 ? 1 : 0];
-      if (idx != null) pendingSel.current = idx;
+      if (idx != null && idx !== selRef.current) { skipAutoOnce.current = true; onSelectAt(idx); }
     }
-    scrollStopT.current = setTimeout(() => {
-      userScrolling.current = false;
-      onScrollActive?.(false);
-      if (pendingSel.current != null && pendingSel.current !== selected) onSelectAt?.(pendingSel.current);
-      pendingSel.current = null;
-    }, 160);
+  };
+  const clearSettle = () => { if (settleT.current) { clearTimeout(settleT.current); settleT.current = null; } };
+  // userScrolling ustawiamy TYLKO z realnego drag (onScrollBeginDrag) — programowy scrollTo (auto-scroll joysticka)
+  // odpala onScroll/momentum, ale NIE onScrollBeginDrag → userScrolling zostaje false, więc settle go NIE dotyczy.
+  const onScrollBeginDrag = () => { userScrolling.current = true; scrollFlag.at = Date.now(); setScrolling(true); onScrollActive?.(true); clearSettle(); };
+  const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    scrollFlag.at = Date.now(); // PerfHud: zatrzaskuj minimum tylko przy świeżym przewijaniu
+    const y = e.nativeEvent.contentOffset.y;
+    if (Math.abs(y - lastY.current) >= step) {
+      scrollDir.current = y >= lastY.current ? 1 : -1; // kierunek USTAL PRZED nadpisaniem lastY
+      lastY.current = y;
+      setWindow(y, viewH); // przelicz okno wirtualizacji raz na wiersz
+    }
+    // PERF: podczas swipe kursor jest SCHOWANY, więc NIE ruszamy `selected` per-frame (to re-renderowało cały ekran).
+  };
+  // brak momentum (powolne puszczenie) → settle po krótkiej chwili; jeśli momentum ruszy, anuluje to onMomentumScrollBegin
+  const onScrollEndDrag = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (!userScrolling.current) return;
+    const y = e.nativeEvent.contentOffset.y;
+    clearSettle();
+    settleT.current = setTimeout(() => settle(y), 90);
+  };
+  const onMomentumScrollBegin = () => clearSettle();
+  const onMomentumScrollEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (!userScrolling.current) return; // programowy scroll (joystick) też odpala momentum — jego NIE settle'ujemy
+    clearSettle();
+    settle(e.nativeEvent.contentOffset.y);
   };
   const onLayout = (e: LayoutChangeEvent) => { const h = e.nativeEvent.layout.height; setViewH(h); setWindow(lastY.current, h); };
+
+  // ── JOYSTICK: przewijanie o STAŁY krok, z kotwicą pozycji ─────────────────────────────────────────
+  // Problem: wcześniej góra/dół szukały kafla NAD/POD bieżącym (`T.r ± T.k`), więc krok równał się
+  // WYSOKOŚCI bieżącego kafla — przy kaflu 3× przeskok był trzykrotny i przewijanie było nierówne.
+  // Teraz: jeden krok = JEDEN WIERSZ SIATKI (`step` = wysokość kafla 1× + odstęp; użycie samego `cell`
+  // rozjeżdżałoby wyrównanie o `gap` na krok). Przytrzymanie = powtarzanie tego samego kroku.
+  //
+  // KURSOR: w trakcie serii kroków NIE zaznaczamy niczego (jak przy swipie palcem). Na starcie serii
+  // zapamiętujemy POZYCJĘ zaznaczonego kafla na ekranie (górna krawędź + kolumna) i po zatrzymaniu
+  // wybieramy kafel, który znalazł się w tym samym miejscu. Dzięki temu zaznaczenie nie „przeskakuje"
+  // na środek ekranu i nie trzeba uzgadniać kroku z wysokością kafli. Efekt uboczny: znika `setSelected`
+  // przy KAŻDYM kroku, które przerysowywało całe drzewo ekranu (joystick był przez to wyraźnie
+  // wolniejszy od palca).
+  const navAnchor = useRef<{ top: number; col: number } | null>(null);
+  const navT = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const navRaf = useRef(0);
+  const navDir = useRef<-1 | 1>(1);
+  const navPrevT = useRef(0);
+  const CRUISE_ROWS_PER_SEC = 5;   // prędkość płynnego przesuwu (wierszy na sekundę) — główne pokrętło „feelu"
+  const CRUISE_DELAY_MS = 240;     // po tylu ms trzymania krok zamienia się w płynny ruch
+
+  const navSettle = () => {
+    const a = navAnchor.current;
+    navAnchor.current = null;
+    onScrollActive?.(false);
+    if (!a || !onSelectAt) return;
+    const r = Math.max(0, Math.floor((lastY.current + a.top - inset) / step));
+    let idx = cellGrid[r]?.[a.col];
+    for (let d = 1; idx == null && d < cols; d++) idx = cellGrid[r]?.[a.col - d] ?? cellGrid[r]?.[a.col + d];
+    for (let dr = 1; idx == null && dr <= 2; dr++) idx = cellGrid[r + dr]?.[a.col] ?? cellGrid[r - dr]?.[a.col];
+    if (idx != null && idx !== selRef.current) { skipAutoOnce.current = true; onSelectAt(idx); }
+  };
+
+  const scrollToY = (y: number, animated: boolean) => {
+    const maxY = Math.max(0, totalH - viewH);
+    const target = Math.max(0, Math.min(maxY, y));
+    lastY.current = target;
+    setWindow(target, viewH);
+    scrollFlag.at = Date.now(); // PerfHud: to też jest przewijanie
+    try { scrollRef.current?.scrollTo({ y: target, animated }); } catch {}
+    return target;
+  };
+
+  // Płynny przesuw ze STAŁĄ prędkością. Krok po kroku (jeden wiersz na powtórzenie) czytało się jako
+  // rytmiczne skakanie — użytkownik chciał ciągłego ruchu. Pojedynczy tap nadal daje DOKŁADNIE jeden
+  // wiersz (precyzja wyboru), a dopiero przytrzymanie przechodzi w jazdę ciągłą.
+  const navTick = (t: number) => {
+    if (!navAnchor.current) return;
+    const dt = navPrevT.current ? (t - navPrevT.current) / 1000 : 0;
+    navPrevT.current = t;
+    scrollToY(lastY.current + navDir.current * CRUISE_ROWS_PER_SEC * step * dt, false);
+    navRaf.current = requestAnimationFrame(navTick);
+  };
+
+  const navStart = (dir: -1 | 1) => {
+    if (viewH <= 0) return;
+    navDir.current = dir;
+    if (navAnchor.current) return; // już jedziemy
+    const p = pos[selRef.current];
+    navAnchor.current = p
+      ? { top: p.r * step + inset - lastY.current, col: p.c }
+      : { top: viewH / 2, col: cols === 3 ? 1 : 0 };
+    onScrollActive?.(true); // chowa ramkę kursora na czas ruchu
+    if (navT.current) clearTimeout(navT.current);
+    scrollToY(lastY.current + dir * step, true); // tap = jeden wiersz
+    navT.current = setTimeout(() => {            // trzymanie → płynnie
+      navPrevT.current = 0;
+      navRaf.current = requestAnimationFrame(navTick);
+    }, CRUISE_DELAY_MS);
+  };
+
+  const navEnd = () => {
+    if (navT.current) { clearTimeout(navT.current); navT.current = null; }
+    if (navRaf.current) { cancelAnimationFrame(navRaf.current); navRaf.current = 0; }
+    navT.current = setTimeout(navSettle, 120);
+  };
+
+  // Uchwyt przez ref-do-funkcji, żeby `useImperativeHandle` nie łapał nieaktualnego domknięcia.
+  const navRef = useRef({ navStart, navEnd }); navRef.current = { navStart, navEnd };
+  useImperativeHandle(ref, () => ({
+    navStart: (d: -1 | 1) => navRef.current.navStart(d),
+    navEnd: () => navRef.current.navEnd(),
+  }), []);
+  useEffect(() => () => {
+    if (navT.current) clearTimeout(navT.current);
+    if (navRaf.current) cancelAnimationFrame(navRaf.current);
+  }, []);
 
   // auto-scroll: widok podąża za zaznaczeniem (joystick/PREV/NEXT) — wyśrodkuj wiersz zaznaczonego kafla.
   // `viewH` w zależnościach: po (re)montażu feeda (np. powrót z podglądu BACK) layout mierzy się PO pierwszym
@@ -170,6 +353,7 @@ export const FeedGrid = memo(function FeedGrid({
     const p = pos[selected];
     if (!p || viewH <= 0) return;
     if (userScrolling.current) return; // kursor podąża za swipem (onScroll) → nie centruj, żeby nie walczyć ze swipem
+    if (skipAutoOnce.current) { skipAutoOnce.current = false; return; } // tuż po swipe: kursor już na miejscu, NIE re-centruj (nie „skacz")
     const sizeSel = p.k * cell + (p.k - 1) * gap;
     const target = Math.max(0, p.r * step + inset + sizeSel / 2 - viewH / 2);
     const animated = didScroll.current; // pierwsze dojście (po layout) = przywrócenie bez animacji; kolejne (joystick) = z animacją
@@ -178,7 +362,7 @@ export const FeedGrid = memo(function FeedGrid({
     try { scrollRef.current?.scrollTo({ y: target, animated }); } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, cols, viewH]);
-  useEffect(() => () => { if (scrollStopT.current) clearTimeout(scrollStopT.current); }, []);
+  useEffect(() => () => { if (settleT.current) clearTimeout(settleT.current); }, []);
 
   return (
     <ScrollView
@@ -186,27 +370,35 @@ export const FeedGrid = memo(function FeedGrid({
       scrollEventThrottle={32}
       onScrollBeginDrag={onScrollBeginDrag}
       onScroll={onScroll}
+      onScrollEndDrag={onScrollEndDrag}
+      onMomentumScrollBegin={onMomentumScrollBegin}
+      onMomentumScrollEnd={onMomentumScrollEnd}
       onLayout={onLayout}
       showsVerticalScrollIndicator={false}
       style={{ flex: 1, alignSelf: 'stretch' }}
     >
       <View style={{ height: totalH }}>
-        {pos.map((p, i) => {
+        {visible.map((i) => {
+          const p = pos[i];
           const y = p.r * step + inset;
           const size = p.k * cell + (p.k - 1) * gap;
-          if (y + size < win.top || y > win.bottom) return null; // poza oknem → nie montuj
           return (
             <FeedTile
               key={i}
+              index={i}
               source={data[i]}
               x={p.c * step + inset}
               y={y}
               size={size}
-              selected={i === selected || (!!selectMode && !!checkedAt?.(i))}
+              span={p.k}
+              // LQIP tylko dla kafli k>1. Dla zwykłych prop jest STALE `false`, więc ich `memo` nie psuje
+              // się przy starcie/stopie przewijania (patrz historia: psujące się domknięcia = jank).
+              lowQ={p.k > 1 ? scrolling : false}
+              selected={(i === selected && !hideCursor) || (!!selectMode && !!checkedAt?.(i))}
               images={images}
-              onOpen={() => onOpen(i)}
-              onCycle={() => onCycleSpan(i)}
-              onLongPress={onLongPressAt ? () => onLongPressAt(i) : undefined}
+              onOpen={openTile}
+              onCycle={cycleTile}
+              onLongPress={onLongPressAt ? longTile : undefined}
               selectMode={selectMode}
               check={selectMode ? !!checkedAt?.(i) : undefined}
             />
@@ -215,4 +407,4 @@ export const FeedGrid = memo(function FeedGrid({
       </View>
     </ScrollView>
   );
-});
+}));

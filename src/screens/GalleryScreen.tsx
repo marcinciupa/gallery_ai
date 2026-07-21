@@ -8,7 +8,7 @@
  * Tryb wyświetlania (IMMERSIVE/RETRO/CLEAN) = `displayMode` (§11b.1) steruje filtrem okładek/zdjęć.
  * Źródło zdjęć: MOCK (assets/mock) — realne z expo-media-library później.
  */
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, Platform, FlatList, LayoutChangeEvent, ImageSourcePropType } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { color, font, screen, textShadow } from '../theme/tokens';
@@ -16,8 +16,9 @@ import type { KeyboardConfig } from '../components/chrome/Keyboard';
 import { MenuBar } from '../components/chrome/MenuBar';
 import { ScreenTopBar, Mode, DisplayMode } from './ScreenChrome';
 import { useMedia } from '../hooks/useMedia';
+import { scrollFlag } from '../components/PerfHud';
 import { applyLibraryFilter } from '../hooks/useLibraryFilter';
-import { FeedGrid, packFeed } from '../components/FeedGrid';
+import { FeedGridHandle, FeedGrid, packFeed } from '../components/FeedGrid';
 import { useImageEditor } from './EditorScreen';
 import { MOCK_FOLDERS, type Folder } from './mockFolders';
 import { Diag, DIAG_ALL } from '../lib/diag';
@@ -191,20 +192,22 @@ function GalleryMenu({ index, onPick, items = MENU_ITEMS, leftHanded = false }: 
 // Syntetyczny folder TRASH przyczepiony ZAWSZE na końcu listy FOLDERS. Trwałe kasowanie dopiero z wnętrza kosza.
 const TRASH_ID = '__TRASH__';
 const TRASH_KEY = 'gallery_ai:trash'; // persystencja: photoKey → źródło (zserializowane obiekty PhotoSource)
+const SELECT_RISK = ['DELETE'] as const; // pozycje menu zaznaczania renderowane na czerwono (High Risk)
 
 // MENU ZAZNACZANIA (Figma 460:2831) — dwupoziomowy popover jak pasek EDIT: górny wiersz [SELECT (n) · ACTION],
 // dolny = podopcje aktywnego wiersza. Nawigacja joystickiem: ←/→ w wierszu, ↑/↓ między wierszami, press = akcja.
 function SelectMenu({
-  count, focus, rootIdx, subIdx, subItems, onPickRoot, onPickSub,
+  count, focus, rootIdx, subIdx, subItems, onPickRoot, onPickSub, riskLabels,
 }: {
   count: number; focus: 0 | 1; rootIdx: 0 | 1; subIdx: number; subItems: readonly string[];
-  onPickRoot: (i: number) => void; onPickSub: (i: number) => void;
+  onPickRoot: (i: number) => void; onPickSub: (i: number) => void; riskLabels?: readonly string[];
 }) {
-  const rootItems = [`SELECT (${count})`, 'ACTION'] as const;
-  // pełnoszerokościowy pasek na dole (jak menu EDIT): dolny wiersz = podopcje aktywnej zakładki, górny = SELECT/ACTION
+  const rootItems = [`SELECT [${count}]`, 'ACTION'] as const;
+  // W PRZEPŁYWIE (Figma 460:2541 „multi_menu" jest rodzeństwem content_area, nie nakładką) → content_area kurczy się,
+  // robiąc miejsce na menu. Jak pasek EDIT: gap 16 między poziomami; pod-pasek (podopcje) na górze, główny na dole.
   return (
-    <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 8, paddingVertical: 8, gap: 8, alignSelf: 'stretch' }}>
-      <MenuBar items={subItems} index={subIdx} focused={focus === 1} onPick={onPickSub} />
+    <View style={{ alignSelf: 'stretch', gap: 16 }}>
+      <MenuBar items={subItems} index={subIdx} focused={focus === 1} onPick={onPickSub} riskLabels={riskLabels} />
       <MenuBar items={rootItems} index={rootIdx} focused={focus === 0} onPick={onPickRoot} />
     </View>
   );
@@ -329,9 +332,9 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     let base = applyLibraryFilter(allFolders, included, excluded);
     if (!showHidden) base = base.filter((f) => !hidden.includes(f.id));
     if (sortMode >= 2) { base = [...base].sort((a, b) => a.name.localeCompare(b.name)); if (sortMode === 3) base.reverse(); } // NAME A-Z / Z-A
-    // KOSZ — syntetyczny folder ZAWSZE na końcu (gdy są jakieś realne foldery lub coś w koszu). Okładka = ostatnio
-    // wyrzucone; licznik = liczba w koszu. Nawigacja/otwieranie jak zwykły folder (id=TRASH_ID → wnętrze z `trashed`).
-    if (base.length > 0 || trashValues.length > 0) {
+    // KOSZ — syntetyczny folder na końcu, TYLKO gdy NIEPUSTY (pusty → niewidoczny). Okładka = ostatnio wyrzucone;
+    // licznik = liczba w koszu. Nawigacja/otwieranie jak zwykły folder (id=TRASH_ID → wnętrze z `trashed`).
+    if (trashValues.length > 0) {
       base = [...base, { id: TRASH_ID, name: 'TRASH', cover: trashValues[trashValues.length - 1], count: trashValues.length } as Folder];
     }
     return base;
@@ -346,7 +349,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     const clear = () => setPhotos((p) => (p.length ? [] : p));
     if (openFolder == null) { clear(); return; }
     const f = folders[openFolder];
-    if (!f) { clear(); return; }
+    if (!f) { setOpenFolder(null); clear(); return; } // folder zniknął (np. opróżniony kosz) → wróć do ROOT
     if (f.id === TRASH_ID) { photosRaw.current = []; clear(); return; } // kosz: wnętrze bierze wprost z `trashed` (photosView)
     if (f.photos) { photosRaw.current = f.photos; setPhotos(sortPhotos(f.photos, sortMode)); return; } // mock (web)
     if (!media) { clear(); return; }
@@ -380,6 +383,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
 
   // Auto-scroll: widok podąża za zaznaczeniem (joystick/PREV/NEXT) — FlashList.scrollToIndex.
   const listRef = useRef<any>(null);
+  const gridSkipAuto = useRef(false);                   // po swipe siatki NIE re-centruj (kursor już na kaflu; inaczej „skacze")
   const [gridViewH, setGridViewH] = useState(0);        // wysokość viewportu FlatListy (do follow-swipe: kafel w środku)
   const gridScrolling = useRef(false);                  // trwa swipe siatki → auto-scroll wyłączony (nie walczy ze swipem)
   const gridScrollT = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -417,6 +421,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   useEffect(() => {
     if (n <= 0 || feedMode || viewerOpen) return; // feed ma własny auto-scroll; przy otwartym podglądzie siatka jest odmontowana
     if (gridScrolling.current) return;             // kursor podąża za swipem (onScroll) → nie centruj, nie walcz ze swipem
+    if (gridSkipAuto.current) { gridSkipAuto.current = false; return; } // tuż po swipe: kursor już na kaflu → nie „snapuj"
     // FlatList z numColumns pracuje na WIERSZACH (getItemCount = ceil(n/cols)), więc scrollToIndex oczekuje
     // indeksu WIERSZA, nie elementu. Zaznaczenie jest w tym wierszu, więc centrujemy wiersz. Po zamknięciu
     // podglądu (viewerOpen→false) siatka montuje się od nowa (scroll na górze) — rAF czeka na ref/layout,
@@ -497,19 +502,12 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     });
     return g;
   }, [feedPack]);
+  const feedRef = useRef<FeedGridHandle>(null); // joystick: przewijanie feeda o stały krok (patrz FeedGrid.nudge)
   const [prefCol, setPrefCol] = useState(0); // zapamiętana kolumna nawigacji (przetrwa przejście przez kafle innego rozmiaru)
   const feedTileAt = (r: number, c: number): number | undefined =>
     r >= 0 && c >= 0 && c < feedCols && feedCellGrid[r] ? feedCellGrid[r][c] : undefined;
-  // góra/dół: kafel w kolumnie prefCol, w wierszu tuż nad/pod bieżącym. Jeśli prefCol wypadł poza bieżący kafel
-  // (np. po tapie) → przyjmij jego kolumnę. Kolumny NIE zmieniamy → przejście przez szeroki kafel trzyma kolumnę.
-  const feedMoveV = (dir: -1 | 1) => {
-    const T = feedPack.pos[selected]; if (!T) return;
-    let c = prefCol; if (c < T.c || c >= T.c + T.k) c = T.c;
-    const r = dir > 0 ? T.r + T.k : T.r - 1;
-    let idx = feedTileAt(r, c);
-    for (let d = 1; idx === undefined && d < feedCols; d++) idx = feedTileAt(r, c - d) ?? feedTileAt(r, c + d);
-    if (idx !== undefined) { if (c !== prefCol) setPrefCol(c); setSelected(idx); }
-  };
+  // GÓRA/DÓŁ w feedzie NIE chodzi już po kaflach — przewijanie o stały krok robi `FeedGrid.nudge`
+  // (kafel po kaflu dawał skok równy wysokości kafla, więc przy 3× przeskakiwało trzykrotnie).
   // lewo/prawo: kafel bezpośrednio z boku bieżącego (kolumna tuż za jego krawędzią) → zmiana prefCol.
   const feedMoveH = (dir: -1 | 1) => {
     const T = feedPack.pos[selected]; if (!T) return;
@@ -620,7 +618,8 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   };
   const restoreFromTrash = (keys: string[]) => setTrashed((t) => { const nx = { ...t }; keys.forEach((k) => delete nx[k]); return nx; });
   const deleteForever = async (keys: string[]) => {
-    try { await media?.deleteItems(keys, []); } catch { /* systemowy dialog odrzucony */ }
+    // ROOT (foldery) → keys to album-id (Album.delete); feed/wnętrze/kosz → keys to content:// URI (Asset.delete)
+    try { await (isFolderView ? media?.deleteItems([], keys) : media?.deleteItems(keys, [])); } catch { /* systemowy dialog odrzucony */ }
     setTrashed((t) => { const nx = { ...t }; keys.forEach((k) => delete nx[k]); return nx; });
     media?.reload(); // odśwież okładki/liczniki albumów po trwałym skasowaniu
   };
@@ -628,12 +627,21 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // USUWANIE — potwierdzenie (overlay) → wykonanie → wynik (auto-znika, 2,5 s → wyjście z trybu). Poza koszem =
   // przeniesienie do kosza (odwracalne, UNDO); w koszu = TRWAŁE (czerwony overlay). (wzorzec rec_ai delete flow)
   const lastMoved = useRef<string[]>([]);
-  const askDelete = () => {
+  // MOVE TO BIN = soft-delete (do kosza, odwracalne + UNDO). DELETE = TRWAŁE (czerwone potwierdzenie).
+  const askTrash = () => {
     if (selectedIds.size === 0) { showMenuToast('NOTHING SELECTED'); return; }
-    const c = selectedIds.size;
-    if (isTrashOpen) setDelMsg({ title: `DELETE ${c} FOREVER?`, sub: 'THIS CANNOT BE UNDONE', permanent: true });
-    else setDelMsg({ title: `MOVE ${c} TO TRASH?`, permanent: false });
+    setDelMsg({ title: `MOVE ${selectedIds.size} TO TRASH?`, permanent: false });
     setDelPhase('confirm');
+  };
+  const askPermanent = () => {
+    if (selectedIds.size === 0) { showMenuToast('NOTHING SELECTED'); return; }
+    setDelMsg({ title: `DELETE ${selectedIds.size} FOREVER?`, sub: 'THIS CANNOT BE UNDONE', permanent: true });
+    setDelPhase('confirm');
+  };
+  const restoreSelected = () => {
+    const keys = Array.from(selectedIds);
+    if (!keys.length) { showMenuToast('NOTHING SELECTED'); return; }
+    restoreFromTrash(keys); setSelectedIds(new Set()); showMenuToast('RESTORED');
   };
   const confirmDelete = async () => {
     const keys = Array.from(selectedIds);
@@ -647,7 +655,8 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const cancelDelete = () => setDelPhase('none');
   const undoTrash = () => { if (lastMoved.current.length) restoreFromTrash(lastMoved.current); lastMoved.current = []; exitSelect(); };
 
-  // dwupoziomowe menu: górny wiersz [SELECT · ACTION], dolny = podopcje. W koszu ACTION = [RESTORE · DELETE].
+  // dwupoziomowe menu jak pasek EDIT: pod-pasek (podopcje) NA GÓRZE, pasek główny [SELECT · ACTION] NA DOLE.
+  // W koszu ACTION = [RESTORE · DELETE]. Nawigacja 1:1 z EDIT: ←/→ w aktywnym pasku, ↑ = pod-pasek, ↓ = główny.
   const SUB_SELECT = ['ALL', 'INVERSE', 'DESELECT'] as const;
   const SUB_ACTION = (isTrashOpen ? ['RESTORE', 'DELETE'] : ['MOVE', 'COPY', 'DELETE']) as readonly string[];
   const subItems = selRoot === 0 ? SUB_SELECT : SUB_ACTION;
@@ -655,18 +664,19 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const activateSub = (i: number) => {
     if (selRoot === 0) { if (i === 0) selectAll(); else if (i === 1) invertSel(); else clearSel(); return; }
     if (isTrashOpen) {
-      if (i === 0) { const keys = Array.from(selectedIds); restoreFromTrash(keys); setSelectedIds(new Set()); showMenuToast('RESTORED'); }
-      else askDelete();
+      if (i === 0) restoreSelected(); else askPermanent(); // kosz: RESTORE / DELETE (TRWAŁE)
     } else {
-      if (SUB_ACTION[i] === 'DELETE') askDelete(); else showMenuToast('COMING SOON'); // MOVE/COPY — stub
+      if (SUB_ACTION[i] === 'DELETE') askTrash(); else showMenuToast('COMING SOON'); // DELETE = soft (do kosza); MOVE/COPY — stub
     }
   };
+  // press: na pasku głównym (focus 0) wchodzi w pod-pasek; na pod-pasku (focus 1) odpala akcję (jak EDIT).
   const selPress = () => { if (selFocus === 0) setSelFocus(1); else activateSub(selSub); };
   const selMoveH = (d: -1 | 1) => {
-    if (selFocus === 0) setSelRoot((r) => (r === 0 ? 1 : 0) as 0 | 1);
+    if (selFocus === 0) setSelRoot((r) => ((r + d + 2) % 2) as 0 | 1);
     else setSelSub((s) => { const len = subItems.length; return (s + d + len) % len; });
   };
-  const selMoveV = (d: -1 | 1) => setSelFocus(d > 0 ? 1 : 0);
+  // ↑ (d=-1) → pod-pasek (focus 1, góra); ↓ (d=+1) → pasek główny (focus 0, dół) — spójnie z układem i z EDIT.
+  const selMoveV = (d: -1 | 1) => setSelFocus(d < 0 ? 1 : 0);
 
   // back: kolejno zamknij MENU → (edytor: menu edycji/pod-widok, a na końcu podgląd) → folder → feed
   const goBack = () => {
@@ -687,8 +697,9 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // FOLDERS/wnętrze folderu (FlatList): kursor PODĄŻA za swipem (kafel w środku pionowym; 3 kol.→środek, 2 kol.→lewa).
   // userScrolling tylko z realnego drag (onScrollBeginDrag) — programowy scrollToIndex nie blokuje wtedy auto-scrollu.
   const gridPendingSel = useRef<number | null>(null); // kafel pod środkiem — ustawiany w `selected` DOPIERO po zatrzymaniu
-  const onGridScrollBeginDrag = () => { gridScrolling.current = true; setCursorHidden(true); if (gridScrollT.current) clearTimeout(gridScrollT.current); };
+  const onGridScrollBeginDrag = () => { gridScrolling.current = true; scrollFlag.at = Date.now(); setCursorHidden(true); if (gridScrollT.current) clearTimeout(gridScrollT.current); };
   const onGridScroll = (e: { nativeEvent: { contentOffset: { y: number } } }) => {
+    scrollFlag.at = Date.now(); // PerfHud: patrz FeedGrid.onScroll
     if (!gridScrolling.current || gridViewH <= 0 || rowHeight <= 0 || n <= 0) return;
     if (gridScrollT.current) clearTimeout(gridScrollT.current);
     // PERF: kursor schowany podczas swipe → NIE wołamy setSelected na każde zdarzenie (re-render całego ekranu
@@ -698,7 +709,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     gridPendingSel.current = Math.min(n - 1, row * cols + (cols === 3 ? 1 : 0));
     gridScrollT.current = setTimeout(() => {
       gridScrolling.current = false; setCursorHidden(false);
-      if (gridPendingSel.current != null && gridPendingSel.current !== selected) setSelected(gridPendingSel.current);
+      if (gridPendingSel.current != null && gridPendingSel.current !== selected) { gridSkipAuto.current = true; setSelected(gridPendingSel.current); }
       gridPendingSel.current = null;
     }, 160);
   };
@@ -710,6 +721,22 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // RÓWNOLEGŁYM do GALLERY VIEW (przełączany klawiszem FEED/GALLERY), więc tam BACK się NIE pojawia.
   // Bez BACK klawisz zostaje WIDOCZNY (puste szkło), tylko bez labela i funkcji. Gęstość też pinch.
   const canBack = inside;
+
+  // chowanie kursora podczas SZYBKIEJ nawigacji joystickiem ↑/↓ (przytrzymanie = repeat); wraca 220 ms po ostatnim
+  // ruchu. Pojedynczy krok NIE chowa (nie „mruga"). Auto-scroll dalej podąża za realnym `selected` (kursor tylko
+  // niewidoczny). Wzorzec jak swipe-follow.
+  const navHideT = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastNavAt = useRef(0);
+  const bumpNavHide = () => {
+    const now = Date.now();
+    const rapid = now - lastNavAt.current < 200; // drugi szybki ruch = przytrzymanie
+    lastNavAt.current = now;
+    if (rapid) setCursorHidden(true);
+    if (navHideT.current) clearTimeout(navHideT.current);
+    navHideT.current = setTimeout(() => setCursorHidden(false), 220);
+  };
+  useEffect(() => () => { if (navHideT.current) clearTimeout(navHideT.current); }, []);
+
   const keyboard: KeyboardConfig = {
     screen: [
       { label: 'SIZE', onPress: toggleView },
@@ -727,11 +754,16 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
       repeat: true, // przytrzymanie = powtarzaj nawigację (krok co 1 element / wiersz)
       shortStepHaptic: true, // krótszy haptic przy przełączaniu miniatur w gallery/feed
 
-      // feed (masonry) → nawigacja PRZESTRZENNA (feedMoveV/H); folder = równa siatka (move ±cols/±1); podgląd = prev/next
-      onUp: () => { if (menuOpen) menuMove(-1); else if (viewerOpen) return; else if (feedMode) feedMoveV(-1); else move(-cols); },
-      onDown: () => { if (menuOpen) menuMove(1); else if (viewerOpen) return; else if (feedMode) feedMoveV(1); else move(cols); },
+      // feed: góra/dół = równe przewijanie (FeedGrid.nudge), lewo/prawo = kafel obok (feedMoveH);
+      // folder = równa siatka (move ±cols/±1); podgląd = prev/next
+      onUp: () => { if (menuOpen) menuMove(-1); else if (viewerOpen) return; else if (!feedMode) { bumpNavHide(); move(-cols); } },
+      onDown: () => { if (menuOpen) menuMove(1); else if (viewerOpen) return; else if (!feedMode) { bumpNavHide(); move(cols); } },
       onLeft: () => { if (menuOpen) return; if (feedMode && !viewerOpen) feedMoveH(-1); else move(-1); },   // podgląd: poprzednie zdjęcie
       onRight: () => { if (menuOpen) return; if (feedMode && !viewerOpen) feedMoveH(1); else move(1); },    // podgląd: następne zdjęcie
+      // feed: PŁYNNY przesuw sterowany wychyleniem (nie serią kroków) — patrz FeedGrid.navStart/navEnd.
+      // Pion obsługuje wyłącznie ta ścieżka, więc onUp/onDown w feedzie celowo nic nie robią.
+      onDirStart: (d) => { if (feedMode && !menuOpen && !viewerOpen && (d === 'up' || d === 'down')) feedRef.current?.navStart(d === 'up' ? -1 : 1); },
+      onDirEnd: () => { if (feedMode) feedRef.current?.navEnd(); },
       onPress: menuOpen ? () => pickMenu(menuIndex) : viewerOpen ? closeViewer : enter,
       // przytrzymanie środka w siatce (nie w menu/podglądzie) → tryb zaznaczania; kursor chowany na czas trzymania
       onHoldStart: () => { if (!menuOpen && !viewerOpen) setCursorHidden(true); },
@@ -741,16 +773,18 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     },
   };
 
-  // KLAWIATURA trybu zaznaczania (Figma 460:2831): ALL · BACK (ekran), DELETE(czerwony) · pusty (metal).
-  // Joystick nawiguje dwupoziomowe menu (SELECT/ACTION). BACK = wyjście z trybu.
+  // KLAWIATURA trybu zaznaczania: DELETE · ALL · [joy] · (RESTORE w koszu) · BACK. DELETE poza koszem = SOFT
+  // (przeniesienie do kosza, odwracalne) → NIE high-risk. W koszu DELETE = TRWAŁE → czerwony + RESTORE.
   const selectKeyboard: KeyboardConfig = {
     screen: [
-      { label: 'ALL', onPress: selectAll },
+      { label: 'DELETE', variant: isTrashOpen ? 'risk' : undefined, onPress: isTrashOpen ? askPermanent : askTrash },
       { label: 'BACK', onPress: exitSelect },
     ],
     metal: [
-      { type: 'label', upper: isTrashOpen ? 'DELETE' : 'TRASH', variant: 'risk', onPress: askDelete },
-      { type: 'label', upper: '', onPress: undefined },
+      { type: 'label', upper: 'ALL', onPress: selectAll },
+      isTrashOpen
+        ? { type: 'label', upper: 'RESTORE', onPress: restoreSelected }
+        : { type: 'label', upper: '', onPress: undefined },
     ],
     joystick: {
       highlighted: true,
@@ -767,7 +801,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     screen: delPhase === 'confirm'
       ? [
           { label: 'CANCEL', onPress: cancelDelete },
-          { label: delMsg.permanent ? 'DELETE' : 'MOVE', supporting: '[HOLD]', variant: 'risk', onHoldComplete: confirmDelete, holdMs: 1200 },
+          { label: delMsg.permanent ? 'DELETE' : 'TRASH', supporting: '[HOLD]', variant: delMsg.permanent ? 'risk' : undefined, onHoldComplete: confirmDelete, holdMs: 1200 },
         ]
       : [
           delMsg.permanent
@@ -795,7 +829,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
       {/* content_area: przy otwartym menu przygaszona (menu zostaje pełne, poza tym wrapperem). Przygaszamy CIEMNĄ
           ZASŁONĄ na wierzchu (a NIE opacity na wrapperze) — group-opacity na wspólnym rodzicu siatki i filtra psuła
           kompozycję mixBlendMode (filtr immersive/retro znikał przy otwartym menu). */}
-      <View style={{ flex: 1, alignSelf: 'stretch' }}>
+      <View style={{ flex: 1, alignSelf: 'stretch', gap: 12 }}>
 
       {/* breadcrumb tylko we wnętrzu folderu; tap = wyjście do listy folderów */}
       {!feedMode && inside && folders[openFolder!] ? (
@@ -820,11 +854,13 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
         {feedMode ? (
           contentW > 0 ? (
             <FeedGrid
+              ref={feedRef}
               data={feedView}
               cols={cols}
               width={contentW}
               spans={feedSpansByIndex}
-              selected={selEff}
+              selected={selected}
+              hideCursor={cursorHidden}
               images={diag.images}
               onCycleSpan={cycleSpan}
               onOpen={selectMode ? toggleSelectAt : openViewerAt}
@@ -926,6 +962,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
           rootIdx={selRoot}
           subIdx={selSub}
           subItems={subItems}
+          riskLabels={isTrashOpen ? SELECT_RISK : undefined}
           onPickRoot={(i) => { setSelFocus(0); setSelRoot(i as 0 | 1); }}
           onPickSub={(i) => { setSelFocus(1); setSelSub(i); activateSub(i); }}
         />

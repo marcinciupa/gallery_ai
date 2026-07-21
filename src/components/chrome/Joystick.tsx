@@ -25,6 +25,11 @@ export type JoystickConfig = {
   onRight?: () => void;
   onPress?: () => void; // wciśnięcie środka
   repeat?: boolean;     // przytrzymanie wychylenia → powtarzaj kierunek do puszczenia (auto-repeat)
+  // CIĄGŁE WYCHYLENIE: onDirStart w chwili wychylenia, onDirEnd przy puszczeniu/przerwaniu. Pozwala
+  // konsumentowi zrobić PŁYNNY ruch zamiast serii kroków (feed przewija się tak zamiast skakać po wierszach).
+  // Niezależne od `repeat` — można używać obu albo tylko tych.
+  onDirStart?: (dir: 'up' | 'down' | 'left' | 'right') => void;
+  onDirEnd?: () => void;
   shortStepHaptic?: boolean; // krótszy impuls na krok (np. szybka nawigacja po siatce gallery/feed)
   // PRZYTRZYMANIE ŚRODKA (bez wychylenia): onHoldStart po krótkim czasie (feedback — np. chowaj kursor),
   // onHoldComplete po `holdMs` (akcja — np. wejście w tryb zaznaczania), onHoldCancel przy puszczeniu przed
@@ -64,11 +69,24 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
   };
   const stopRepeat = () => { if (repeatTimer.current) { clearInterval(repeatTimer.current); repeatTimer.current = null; } };
   const stepMs = () => (cfgRef.current?.shortStepHaptic ? 14 : 28); // krótszy „klik" przy szybkiej nawigacji
+
+  // OPÓR PROGRESYWNY: im dalej wychylisz gałkę, tym mocniejszy impuls — imitacja rosnącego oporu
+  // sprężyny w fizycznym joysticku. Droga gałki dzielona na DETENTS zapadek; impuls leci przy KAŻDYM
+  // przekroczeniu zapadki W STRONĘ WYCHYLENIA (przy powrocie do środka nie — opór maleje, nie rośnie).
+  // Bez kwantyzacji na zapadki trzeba by strzelać haptyką na każde zdarzenie ruchu (~60/s) = brzęczenie.
+  const DETENTS = 6;
+  const lastDetent = useRef(0);
+  const curDir = useRef<Dir | null>(null); // kierunek trzymany TERAZ (do zmiany w locie)
+  const detentAt = (dist: number, max: number) => Math.min(DETENTS, Math.round((Math.min(dist, max) / max) * DETENTS));
   // przytrzymanie wychylenia (repeat) → powtarzaj kierunek co 120 ms aż do puszczenia
   const startRepeat = (dir: Dir) => {
     if (!cfgRef.current?.repeat) return;
     stopRepeat();
-    repeatTimer.current = setInterval(() => { callDir(dir); hapticKnob(0.3, stepMs()); }, 120);
+    // Nawigacja powtarza się co 120 ms, ale HAPTYKA co drugi tick (~240 ms): przy pełnym wychyleniu
+    // 120 ms czytało się jako zbyt gęste brzęczenie. Częstotliwość odczepiona od tempa nawigacji, żeby
+    // zmiana odczucia nie spowalniała przewijania siatki.
+    let tick = 0;
+    repeatTimer.current = setInterval(() => { callDir(dir); if (tick++ % 2 === 0) hapticKnob(0.3, stepMs()); }, 120);
   };
   useEffect(() => () => { stopRepeat(); clearHold(); }, []);
 
@@ -84,6 +102,8 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
       // nie oddawaj gestu innym responderom (np. ekranowemu swipe) — inaczej poziome ruchy joysticka giną
       onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: () => {
+        lastDetent.current = 0;
+        curDir.current = null;
         fired.current = false;
         holdStarted.current = false;
         holdCompleted.current = false;
@@ -101,27 +121,46 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
         const max = dims.joystick.nubTravel;
         tx.setValue(clamp(g.dx, -max, max));
         ty.setValue(clamp(g.dy, -max, max));
-        if (fired.current) return;
+        const det = detentAt(Math.hypot(g.dx, g.dy), max);
+        if (det > lastDetent.current) hapticKnob(0.12 + 0.62 * (det / DETENTS), 12); // opór rośnie z wychyleniem
+        // powrót gałki do neutrum (jeszcze w trakcie gestu) → delikatne „klik" zerowe. Puszczenie gałki
+        // ma osobny sygnał (hapticKnobReturn w release), więc tego nie dublujemy.
+        else if (det === 0 && lastDetent.current > 0) hapticKnob(0.1, 10);
+        lastDetent.current = det;
         const th = dims.joystick.dirThreshold;
         const ax = Math.abs(g.dx), ay = Math.abs(g.dy);
         // odpal, gdy dominująca oś przekroczy próg i WYRAŹNIE przeważa (≥1.3×) — inaczej skośny swipe
         // odpala w bok zamiast w dół/górę (rzadkie „poszło nie tam"); przy jasnej dominacji reaguje od razu.
         const dom = Math.max(ax, ay), sub = Math.min(ax, ay);
-        if (dom > th && dom >= sub * 1.3) {
-          fired.current = true;
+        if (!(dom > th && dom >= sub * 1.3)) return;
+        // dominująca oś decyduje o kierunku (4-kier., bez skosów)
+        const dir: Dir = ax >= ay ? (g.dx > 0 ? 'right' : 'left') : (g.dy > 0 ? 'down' : 'up');
+        if (dir === curDir.current) return; // ten sam kierunek → nic nowego
+        // ZMIANA KIERUNKU W LOCIE: wcześniej `fired.current` blokował ponowną ocenę na resztę gestu, więc
+        // raz złapany kierunek trzymał się do puszczenia gałki. Teraz przestawienie gałki (np. z góry na dół)
+        // przełącza nawigację bez odrywania palca. Haptyka „dzieje się sama": przechodząc przez środek
+        // gałka schodzi przez zapadki do zera (impuls neutrum) i znów narasta po drugiej stronie.
+        const first = !fired.current;
+        fired.current = true;
+        curDir.current = dir;
+        if (first) {
           // wychylenie = nawigacja, nie przytrzymanie środka → anuluj hold i przywróć kursor, jeśli już schowany
           if (holdStarted.current && !holdCompleted.current) cfgRef.current?.onHoldCancel?.();
           clearHold();
-          // dominująca oś decyduje o kierunku (4-kier., bez skosów)
-          const dir: Dir = ax >= ay ? (g.dx > 0 ? 'right' : 'left') : (g.dy > 0 ? 'down' : 'up');
-          callDir(dir);
-          startRepeat(dir); // przy repeat: trzymanie wychylenia powtarza kierunek
-          hapticKnob(0.5, stepMs()); // krótki impuls na zmianie (jak knob discrete)
         }
+        stopRepeat(); // przy zmianie kierunku stary auto-repeat musi zgasnąć, inaczej lecą oba naraz
+        // onDirStart wołamy TAKŻE przy zmianie (bez onDirEnd) — konsument ma wtedy tylko zmienić kierunek
+        // ruchu, a nie zatrzymywać się i wybierać kafla.
+        cfgRef.current?.onDirStart?.(dir);
+        callDir(dir);
+        startRepeat(dir); // przy repeat: trzymanie wychylenia powtarza kierunek
+        lastDetent.current = DETENTS; // nie dubluj zapadki z impulsem zlapania kierunku
+        hapticKnob(0.5, stepMs()); // krótki impuls na zmianie (jak knob discrete)
       },
       onPanResponderRelease: (_e, g) => {
         clearHold();
         stopRepeat();
+        if (fired.current) cfgRef.current?.onDirEnd?.();
         springBack();
         const moved = Math.hypot(g.dx, g.dy);
         const c = cfgRef.current;
@@ -138,6 +177,7 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
             hapticKnobReturn(!!c?.highlighted);
           }
         }
+        curDir.current = null;
         fired.current = false;
         holdStarted.current = false;
         holdCompleted.current = false;
@@ -146,10 +186,13 @@ export function Joystick({ config }: { config?: JoystickConfig }) {
         clearHold();
         stopRepeat();
         springBack();
+        if (fired.current) cfgRef.current?.onDirEnd?.(); // inaczej ciągły ruch zostałby włączony na zawsze
         if (holdStarted.current && !holdCompleted.current) cfgRef.current?.onHoldCancel?.();
         fired.current = false;
         holdStarted.current = false;
         holdCompleted.current = false;
+        lastDetent.current = 0;
+        curDir.current = null;
       },
     })
   ).current;
