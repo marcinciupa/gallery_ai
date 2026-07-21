@@ -3,26 +3,49 @@
  * siatkę pikseli wyświetlacza. Tekstura ma alfę (ciemne piksele ~10–25% + przezroczyste oczka),
  * nakładana zwykłym alpha (bez blendingu). Renderowana MIĘDZY treścią a połyskiem/glow.
  *
- * WYDAJNOŚĆ (kluczowe): koszt `resizeMode="repeat"` skaluje się z POWIERZCHNIĄ warstwy = 100/SCALE %.
- * Kafel docelowy = (natywny PNG px) × SCALE. Przy SCALE=0.25 warstwa miała 400%×400% = 16× ekran →
- * Android re-kafelkował ją przy każdej rekompozycji (scroll gęstej siatki) = jank. SCALE=0.5 → 200%×200%
- * = 4× ekran (4× taniej). GĘSTOŚĆ kropek jest sprzężona ze SCALE, a SCALE ze SCALĄ powierzchni — dlatego
- * „2× gęściej" NIE robimy przez zejście SCALE (wróciłby jank), tylko przez ZMNIEJSZENIE natywnej tekstury:
- * PNG 8×8 (był 16×16, ten sam wzór 2×2 kwadrantów) + SCALE=0.5 → kafel 4px, powierzchnia repeat bez zmian.
- * Rounded-clip pominięty — szyba (rodzic) już przycina do zaokrąglonych rogów, wystarczy tani overflow.
+ * WYDAJNOŚĆ (kluczowe): `resizeMode="repeat"` mapuje się na Skia `TileMode.REPEAT` (BitmapShader,
+ * patrz RN `ImageResizeMode.kt`), więc koszt = liczba wypełnianych pikseli, czyli POWIERZCHNIA
+ * warstwy. Liczba kafli mieszczących się w tej powierzchni jest dla GPU obojętna — shader liczy
+ * zawinięte UV per piksel, nie „stempluje" kafli. Dlatego warstwa MUSI mieć dokładnie 100%×100%.
+ * Historycznie było odwrotnie: warstwę powiększano do 100/SCALE %, żeby potem zjechać ją
+ * `transform: scale(SCALE)` i w ten sposób zmniejszyć kafel. Przy SCALE=0.25 dawało to 400%×400%
+ * = 16× powierzchnia ekranu i było PRAWDZIWĄ przyczyną wielodniowego janku galerii (2026-07-02);
+ * SCALE=0.5 (4× ekran) tylko to łagodziło. Obecne 1:1 usuwa problem u źródła. NIE przywracać
+ * transformu ani warstwy większej niż 100%.
+ *
+ * GĘSTOŚĆ kropek reguluj WYŁĄCZNIE rozmiarem tekstury: 1 px PNG = 1 dp przy skali 1. Kafel 2 dp =
+ * PNG 2×2 (kwadrant 1 px), warianty @2x 4×4, @3x 6×6, @4x 8×8. Chcesz drobniejsze kropki — zmniejsz
+ * PNG, nie kombinuj ze skalą.
+ *
+ * ⚠️ Wariant @4x MUSI istnieć. Metro mapuje skale na kubełki gęstości Androida (patrz
+ * `@react-native/community-cli-plugin/.../assetPathUtils.js`): 1→mdpi, 2→xhdpi, 3→xxhdpi, 4→xxxhdpi.
+ * Bez @4x urządzenia xxxhdpi (np. S25 Ultra) biorą xxhdpi i doskalowują go w górę → kafel rośnie,
+ * a wzór wygląda 2× rzadziej. Zdiagnozowane na urządzeniu 2026-07-21.
+ *
+ * WZÓR (Figma „pattern_1", node 472:16254): 2×2 kwadranty, RGB 14,13,11, alfy .25 / .1 / .1 / 0
+ * (kolejno TL, TR, BL, BR). PNG generowane PROCEDURALNIE z tych wartości — NIE eksportem z Figmy,
+ * bo frame ma fill #FFFFFF, który wkleiłby się pod półprzezroczyste kwadranty i zabił alfę.
+ *
+ * Rounded-clip pominięty — szyba (rodzic) i tak przycina do zaokrąglonych rogów.
  */
 import { Image, View } from 'react-native';
 
 const MATRIX = require('../../../assets/figma/screen_matrix.png');
-const SCALE = 0.5; // PNG 8×8 → kafel 4px; powierzchnia repeat = 200%×200% (4× ekran), jak przy 8px
 
+// Wrapper istnieje TYLKO dla `pointerEvents="none"` — nakładka leży nad treścią, więc bez tego
+// przechwytywałaby dotyk. Ani <Image>, ani ImageStyle nie przyjmują tego propa (RN 0.85).
+//
+// ⚠️ `width/height: '100%'` MUSZĄ być jawne. Insety (`top/left/right/bottom: 0`, czyli absoluteFill)
+// NIE nadają rozmiaru temu <Image> — spada wtedy do wymiaru własnego tekstury (12×12) i `repeat`
+// kafelkuje tylko malutki prostokąt w lewym górnym rogu zamiast całego ekranu. Zweryfikowane na
+// urządzeniu buildem diagnostycznym (2026-07-21): matryca zniknęła dokładnie z tego powodu.
 export function ScreenMatrix(_props: { radius?: number }) {
   return (
-    <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden' }}>
+    <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
       <Image
         source={MATRIX}
         resizeMode="repeat"
-        style={{ position: 'absolute', top: 0, left: 0, width: `${100 / SCALE}%`, height: `${100 / SCALE}%`, transform: [{ scale: SCALE }], transformOrigin: 'top left' } as any}
+        style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
       />
     </View>
   );
