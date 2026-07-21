@@ -234,6 +234,7 @@ export function ScreenKey({
   onLongPress,
   onHoldComplete,
   onHoldStart,
+  onHoldCancel,
   holdMs = 2000,
   progress: progressFraction,
 }: {
@@ -246,6 +247,7 @@ export function ScreenKey({
   onLongPress?: () => void;
   onHoldComplete?: () => void;
   onHoldStart?: () => void;
+  onHoldCancel?: () => void;
   holdMs?: number;
   progress?: number;
 }) {
@@ -285,7 +287,7 @@ export function ScreenKey({
     clearTimeout(holdTimer.current);
     progress.stopAnimation();
     Animated.timing(progress, { toValue: 0, duration: 200, useNativeDriver: false }).start();
-    if (!completed.current) hapticCancel();
+    if (!completed.current) { hapticCancel(); onHoldCancel?.(); } // puszczone przed czasem → przywróć etykietę
   };
   const ringColor = dark ? color.dark1A : variant === 'risk' ? color.recordRed : color.phosphor;
   const handlePress = () => {

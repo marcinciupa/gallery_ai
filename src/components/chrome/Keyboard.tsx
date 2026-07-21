@@ -22,6 +22,7 @@ export type ScreenKeyDef = {
   onLongPress?: () => void;
   onHoldComplete?: () => void;
   onHoldStart?: () => void;
+  onHoldCancel?: () => void;
   holdMs?: number;
   progress?: number;
 };
@@ -65,6 +66,7 @@ function ScreenSlot({ def }: { def?: ScreenKeyDef }) {
       onLongPress={def.onLongPress}
       onHoldComplete={def.onHoldComplete}
       onHoldStart={def.onHoldStart}
+      onHoldCancel={def.onHoldCancel}
       holdMs={def.holdMs}
       progress={def.progress}
     />

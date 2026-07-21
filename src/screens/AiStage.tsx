@@ -55,7 +55,7 @@ export const AiStage = forwardRef<AiStageHandle, {
     navLeft: () => { if (levelRef.current === 'second') maskRef.current?.navValue(-1); else setFirst((i) => Math.max(0, i - 1)); },
     navRight: () => { if (levelRef.current === 'second') maskRef.current?.navValue(1); else setFirst((i) => Math.min(BRUSH_TABS.length - 1, i + 1)); },
     navUp: () => {}, // w górę NIE odsłania poziomu 2 — do tego służy zatwierdzenie (press/tap)
-    navDown: () => setLevel('first'),
+    navDown: () => {}, // zwijanie poziomu 2 TYLKO przez BACK — pion joysticka tego nie robi (mylące)
     press: () => { if (levelRef.current === 'first') setLevel('second'); },
     collapse: () => { if (levelRef.current === 'second') { setLevel('first'); return true; } return false; },
     undo: () => maskRef.current?.undo(),

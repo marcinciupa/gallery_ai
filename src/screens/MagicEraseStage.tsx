@@ -64,7 +64,7 @@ export const MagicEraseStage = forwardRef<MagicEraseHandle, {
     navLeft: () => { if (levelRef.current === 'second') maskRef.current?.navValue(-1); else setFirst((i) => Math.max(0, i - 1)); },
     navRight: () => { if (levelRef.current === 'second') maskRef.current?.navValue(1); else setFirst((i) => Math.min(FIRST_TABS.length - 1, i + 1)); },
     navUp: () => {}, // w górę NIE odsłania poziomu 2 — do tego służy zatwierdzenie (press/tap)
-    navDown: () => setLevel('first'),
+    navDown: () => {}, // zwijanie poziomu 2 TYLKO przez BACK — pion joysticka tego nie robi (mylące)
     press: () => { if (levelRef.current === 'first' && firstRef.current !== 2) setLevel('second'); },
     collapse: () => { if (levelRef.current === 'second') { setLevel('first'); return true; } return false; },
     apply: () => { void doApply(); },

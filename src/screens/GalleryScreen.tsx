@@ -74,10 +74,13 @@ function usePhotoAi(source?: ImageSourcePropType): boolean {
 // Checkbox trybu zaznaczania (Figma 460:2831) — kwadracik w LEWYM-górnym rogu (badge'y RAW/AI są w prawym).
 // Zaznaczony = wypełniony fosforem z „✓"; niezaznaczony = pusta ramka na półprzezroczystym tle (czytelny nad zdjęciem).
 function TileCheck({ on }: { on: boolean }) {
+  // Checkbox bez ptaszka (Figma 450:1861): niezaznaczony = wypełniony fosforem, ZAZNACZONY = ciemny.
+  // Ramka fosforowa w obu stanach, więc pozycja i rozmiar nie skaczą przy przełączaniu.
   return (
-    <View pointerEvents="none" style={{ position: 'absolute', top: 6, left: 6, width: 18, height: 18, borderRadius: 3, borderWidth: 2, borderColor: screen.olive.primary, backgroundColor: on ? screen.olive.primary : 'rgba(26,26,26,0.45)', alignItems: 'center', justifyContent: 'center' }}>
-      {on ? <Text style={{ fontFamily: font.monoBody.family, fontSize: 12, lineHeight: 13, color: color.dark21 }}>{'✓'}</Text> : null}
-    </View>
+    <View
+      pointerEvents="none"
+      style={{ position: 'absolute', top: 6, left: 6, width: 18, height: 18, borderRadius: 3, borderWidth: 2, borderColor: screen.olive.primary, backgroundColor: on ? color.dark21 : screen.olive.primary }}
+    />
   );
 }
 
@@ -159,7 +162,10 @@ const PhotoTile = memo(function PhotoTile({ source, size, selected, images, onPr
 
 // MENU (node 360:5309) — kontekstowe menu galerii. Popover fosforowy (#E2FFE4) z ciemnym tekstem; zaznaczona
 // pozycja = ciemna „pigułka" z zielonym tekstem i bulletem „•". Nawigacja joystick góra/dół + press (lub tap).
-const MENU_ITEMS = ['SELECT', 'SORT', 'FILTER MEDIA', 'SHOW HIDDEN ELEMENTS', 'OPEN TRASH BIN', 'CREATE NEW FOLDER', 'SETTINGS'] as const;
+const MENU_ITEMS = ['SELECT', 'SORT', 'FILTER MEDIA', 'SHOW HIDDEN ELEMENTS', 'OPEN TRASH BIN', 'SETTINGS'] as const;
+// W PODGLĄDZIE menu dotyczy pojedynczego zdjęcia, więc pozycje operujące na LIŚCIE (zaznaczanie,
+// sortowanie, filtrowanie, ukrywanie) nie mają tam sensu — zostają tylko te działające zawsze.
+const MENU_ITEMS_VIEWER = ['OPEN TRASH BIN', 'SETTINGS'] as const;
 
 function GalleryMenu({ index, onPick, items = MENU_ITEMS, leftHanded = false }: { index: number; onPick: (i: number) => void; items?: readonly string[]; leftHanded?: boolean }) {
   const txt = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size } as const;
@@ -212,6 +218,8 @@ function MenuScrim() {
 // Syntetyczny folder TRASH przyczepiony ZAWSZE na końcu listy FOLDERS. Trwałe kasowanie dopiero z wnętrza kosza.
 const TRASH_ID = '__TRASH__';
 const TRASH_KEY = 'gallery_ai:trash'; // persystencja: photoKey → źródło (zserializowane obiekty PhotoSource)
+// Domyślne zaznaczenie w menu = ŚRODEK listy; przy parzystej liczbie pozycji — lewy ze środkowych.
+const midIdx = (n: number) => Math.max(0, Math.floor((n - 1) / 2));
 const SELECT_RISK = ['DELETE'] as const; // pozycje menu zaznaczania renderowane na czerwono (High Risk)
 
 // MENU ZAZNACZANIA (Figma 460:2831) — dwupoziomowy popover jak pasek EDIT: górny wiersz [SELECT (n) · ACTION],
@@ -219,20 +227,23 @@ const SELECT_RISK = ['DELETE'] as const; // pozycje menu zaznaczania renderowane
 function SelectMenu({
   count, focus, rootIdx, subIdx, subItems, onPickRoot, onPickSub, riskLabels,
 }: {
-  count: number; focus: 0 | 1; rootIdx: 0 | 1; subIdx: number; subItems: readonly string[];
+  count: number; focus: 0 | 1 | 2; rootIdx: number; subIdx: number; subItems: readonly string[];
   onPickRoot: (i: number) => void; onPickSub: (i: number) => void; riskLabels?: readonly string[];
 }) {
-  const rootItems = [`SELECT [${count}]`, 'ACTION'] as const;
+  // Licznik [n] jest PRZECHODNI — dokleja się do aktualnie zaznaczonej pozycji poziomu 1, zamiast
+  // wisieć na stałe przy SELECT. Dzięki temu liczba zaznaczonych jest widoczna tam, gdzie patrzysz.
+  const rootItems = ['SELECTION', 'SELECT', 'ACTION'].map((l, i) => (i === rootIdx ? `${l} [${count}]` : l));
   // W PRZEPŁYWIE (Figma 460:2541 „multi_menu" jest rodzeństwem content_area, nie nakładką) → content_area kurczy się,
   // robiąc miejsce na menu. Jak pasek EDIT: gap 16 między poziomami; pod-pasek (podopcje) na górze, główny na dole.
   return (
     <View style={{ alignSelf: 'stretch', gap: 16 }}>
       {/* Poziom 2 odsłania się DOPIERO po zatwierdzeniu pozycji poziomu 1 (press na joysticku lub tap).
           Wcześniej całe drzewko było widoczne od razu. Powrót zwija poziom (joystick w dół lub BACK). */}
-      {focus === 1 ? (
+      {focus === 1 && subItems.length > 0 ? (
         <MenuBar items={subItems} index={subIdx} focused onPick={onPickSub} riskLabels={riskLabels} />
       ) : null}
-      <MenuBar items={rootItems} index={rootIdx} focused={focus === 0} onPick={onPickRoot} />
+      {/* focus 2 = sterowanie przeszło na SIATKĘ → żaden pasek nie jest podświetlony */}
+      <MenuBar items={rootItems} index={rootIdx} focused={focus === 0} onPick={onPickRoot} boldDigits />
     </View>
   );
 }
@@ -254,27 +265,28 @@ function OverlayPanel({ tone, title, sub }: { tone: 'red' | 'phosphor'; title: s
   const bg = tone === 'phosphor' ? screen.olive.primary : color.recordRed;
   const sh = tone === 'phosphor' ? 'rgba(226,255,228,0.25)' : 'rgba(255,76,76,0.25)';
   return (
-    <View
-      pointerEvents="none"
-      style={
-        {
-          position: 'absolute',
-          top: 48,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          borderRadius: 4,
-          backgroundColor: bg,
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: 24,
-          gap: 8,
-          boxShadow: `0px 0px 8px 0px ${sh}`,
-        } as any
-      }
-    >
-      <Text style={{ fontFamily: font.timer.family, fontSize: 24, lineHeight: 30, color: color.dark21, textAlign: 'center' }}>{title}</Text>
-      {sub ? <Text style={{ fontFamily: font.monoBody.family, fontSize: 12, color: color.dark21, textAlign: 'center' }}>{sub}</Text> : null}
+    // PASMO wyśrodkowane w treści, NIE prostokąt do dołu ekranu (Figma 138:2626) — nad i pod panelem
+    // widać dalszą część zawartości. Wcześniej panel wypełniał wszystko od nagłówka w dół.
+    <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center' }}>
+      <View
+        style={
+          {
+            alignSelf: 'stretch',
+            backgroundColor: bg,
+            alignItems: 'center',
+            justifyContent: 'center',
+            paddingVertical: 64, // duży zapas pionowy — w projekcie tekst pływa w środku pasma
+            paddingHorizontal: 24,
+            gap: 8,
+            borderRadius: 4,
+            boxShadow: `0px 0px 8px 0px ${sh}`,
+          } as any
+        }
+      >
+        {/* CIEMNY tekst na pełnym tle w kolorze akcentu — kontrast niezależny od tego, co pod spodem */}
+        <Text style={{ fontFamily: font.timer.family, fontSize: 24, lineHeight: 30, color: color.dark21, textAlign: 'center' }}>{title}</Text>
+        {sub ? <Text style={{ fontFamily: font.monoBody.family, fontSize: 12, color: color.dark21, textAlign: 'center' }}>{sub}</Text> : null}
+      </View>
     </View>
   );
 }
@@ -309,10 +321,14 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // joysticka. `selectedIds` = klucze zaznaczonych (folder.id lub photoKey). Dwupoziomowe menu (SELECT/ACTION).
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [selFocus, setSelFocus] = useState<0 | 1>(0); // 0 = górny wiersz (SELECT/ACTION), 1 = dolny (podopcje)
-  const [selRoot, setSelRoot] = useState<0 | 1>(0);   // 0 = SELECT, 1 = ACTION
+  // 0 = poziom 1 menu, 1 = poziom 2 (podopcje), 2 = SIATKA (joystick nawiguje kafle, press zaznacza)
+  const [selFocus, setSelFocus] = useState<0 | 1 | 2>(0);
+  const [selRoot, setSelRoot] = useState(1);  // 0 = SELECTION, 1 = SELECT (środek, domyślny; oddaje fokus siatce), 2 = ACTION
   const [selSub, setSelSub] = useState(0);            // indeks w podopcjach
-  const [delPhase, setDelPhase] = useState<'none' | 'confirm' | 'deleted'>('none'); // potwierdzenie usuwania
+  // Przepływ usuwania wg rec_ai (Figma 478:17683): confirm (czerwony) → [trzymanie: DELETING]
+  // → deleted (fosforowy) z UNDO [HOLD] → [trzymanie: RESTORING] → restored (fosforowy).
+  const [delPhase, setDelPhase] = useState<'none' | 'confirm' | 'deleted' | 'restored'>('none');
+  const [holding, setHolding] = useState(false); // trwa przytrzymanie klawisza akcji → zmienia jego etykietę
   const [delMsg, setDelMsg] = useState<{ title: string; sub?: string; permanent: boolean }>({ title: '', permanent: false });
 
   // KURSOR chowany podczas swipe-follow i przytrzymania joysticka (wraca po zatrzymaniu). Nie zmienia `selected`,
@@ -558,8 +574,17 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const [prefCol, setPrefCol] = useState(0); // zapamiętana kolumna nawigacji (przetrwa przejście przez kafle innego rozmiaru)
   const feedTileAt = (r: number, c: number): number | undefined =>
     r >= 0 && c >= 0 && c < feedCols && feedCellGrid[r] ? feedCellGrid[r][c] : undefined;
-  // GÓRA/DÓŁ w feedzie NIE chodzi już po kaflach — przewijanie o stały krok robi `FeedGrid.nudge`
-  // (kafel po kaflu dawał skok równy wysokości kafla, więc przy 3× przeskakiwało trzykrotnie).
+  // GÓRA/DÓŁ w feedzie, POJEDYNCZE pchnięcie: kursor na sąsiedni kafel (w kolumnie `prefCol`, w wierszu
+  // tuż nad/pod bieżącym). Przytrzymanie przechodzi w płynny przesuw i obsługuje je FeedGrid
+  // (`navStart`/`navEnd`) — tam krok jest liczony w px/s, więc wysokie kafle nie powodują przeskoków.
+  const feedMoveV = (dir: -1 | 1) => {
+    const T = feedPack.pos[selected]; if (!T) return;
+    let c = prefCol; if (c < T.c || c >= T.c + T.k) c = T.c;
+    const r = dir > 0 ? T.r + T.k : T.r - 1;
+    let idx = feedTileAt(r, c);
+    for (let d = 1; idx === undefined && d < feedCols; d++) idx = feedTileAt(r, c - d) ?? feedTileAt(r, c + d);
+    if (idx !== undefined) { if (c !== prefCol) setPrefCol(c); setSelected(idx); }
+  };
   // lewo/prawo: kafel bezpośrednio z boku bieżącego (kolumna tuż za jego krawędzią) → zmiana prefCol.
   const feedMoveH = (dir: -1 | 1) => {
     const T = feedPack.pos[selected]; if (!T) return;
@@ -605,9 +630,12 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // MENU
   const toggleMenu = () => setMenuOpen((o) => { if (!o) setMenuIndex(0); return !o; });
   // nawigacja zapętlona (loop): z końca wracamy na początek i odwrotnie
-  const menuMove = (d: number) => setMenuIndex((i) => (i + d + MENU_ITEMS.length) % MENU_ITEMS.length);
+  // Lista pozycji zależy od kontekstu — `pickMenu`/`menuMove` MUSZĄ indeksować po niej, nie po stałej
+  // MENU_ITEMS, bo po odfiltrowaniu pozycji indeksy się przesuwają i klikałoby się nie to, co widać.
+  const menuItems: readonly string[] = viewerOpen ? MENU_ITEMS_VIEWER : MENU_ITEMS;
+  const menuMove = (d: number) => setMenuIndex((i) => (i + d + menuItems.length) % menuItems.length);
   const pickMenu = (i: number) => {
-    const item = MENU_ITEMS[i];
+    const item = menuItems[i];
     // SORT i SHOW HIDDEN działają „w miejscu" — menu ZOSTAJE otwarte (można cyklować / od razu zobaczyć efekt).
     if (item === 'SORT') { const m = (sortMode + 1) % SORTS.length; setSortMode(m); showMenuToast(`SORT: ${SORTS[m]}`); return; }
     if (item === 'SHOW HIDDEN ELEMENTS') { const next = !showHidden; setShowHidden(next); showMenuToast(next ? 'SHOWING HIDDEN' : 'HIDING HIDDEN'); return; }
@@ -615,10 +643,12 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     if (item === 'SELECT') { enterSelect(viewerOpen ? undefined : selected); return; } // wejście w tryb zaznaczania (zaznacz bieżący)
     if (item === 'OPEN TRASH BIN') { const ti = folders.findIndex((f) => f.id === TRASH_ID); if (ti >= 0) { setFeedMode(false); setOpenFolder(ti); } else showMenuToast('TRASH EMPTY'); return; }
     if (item === 'SETTINGS') { onOpenSettings?.(); return; }
-    // FILTER MEDIA / CREATE NEW FOLDER — dorobimy (backlog)
+    // FILTER MEDIA — dorobimy (backlog)
   };
   // etykiety menu (dynamiczne: SHOW ⇄ HIDE HIDDEN wg stanu)
-  const menuLabels = MENU_ITEMS.map((l) => (l === 'SHOW HIDDEN ELEMENTS' ? (showHidden ? 'HIDE HIDDEN ELEMENTS' : 'SHOW HIDDEN ELEMENTS') : l));
+  const menuLabels = menuItems.map((l) => (l === 'SHOW HIDDEN ELEMENTS' ? (showHidden ? 'HIDE HIDDEN ELEMENTS' : 'SHOW HIDDEN ELEMENTS') : l));
+  // zmiana kontekstu (wejście/wyjście z podglądu) skraca listę → zaznaczenie mogłoby wypaść poza zakres
+  useEffect(() => { setMenuIndex((i) => Math.min(i, menuItems.length - 1)); }, [menuItems.length]);
 
   // ── TRYB ZAZNACZANIA ────────────────────────────────────────────────────────────────────────────
   const curList: any[] = feedMode ? feedView : inside ? photosView : folders;
@@ -634,7 +664,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
 
   const enterSelect = (i?: number) => {
     setMenuOpen(false); setViewerOpen(false); setImmersiveOpen(false); setCursorHidden(false);
-    setSelectMode(true); setSelFocus(0); setSelRoot(0); setSelSub(0); setDelPhase('none');
+    setSelectMode(true); setSelFocus(0); setSelRoot(1); setSelSub(0); setDelPhase('none'); // selRoot 1 = SELECT (środek)
     const k = i != null ? keyOfIndex(i) : undefined;
     setSelectedIds(k ? new Set([k]) : new Set());
   };
@@ -697,6 +727,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   };
   const confirmDelete = async () => {
     const keys = Array.from(selectedIds);
+    setHolding(false);
     if (delMsg.permanent) { await deleteForever(keys); setDelMsg((m) => ({ ...m, title: 'DELETED', sub: undefined })); lastMoved.current = []; }
     else { lastMoved.current = await moveToTrash(keys); setDelMsg((m) => ({ ...m, title: 'MOVED TO TRASH', sub: undefined })); }
     setSelectedIds(new Set());
@@ -704,15 +735,24 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     if (delTimer.current) clearTimeout(delTimer.current);
     delTimer.current = setTimeout(() => { setDelPhase('none'); setSelectMode(false); }, 2500);
   };
-  const cancelDelete = () => setDelPhase('none');
-  const undoTrash = () => { if (lastMoved.current.length) restoreFromTrash(lastMoved.current); lastMoved.current = []; exitSelect(); };
+  const cancelDelete = () => { setHolding(false); setDelPhase('none'); };
+  const undoTrash = () => {
+    if (lastMoved.current.length) restoreFromTrash(lastMoved.current);
+    lastMoved.current = [];
+    setHolding(false);
+    setDelMsg((m) => ({ ...m, title: 'RESTORED', sub: undefined }));
+    setDelPhase('restored');
+    if (delTimer.current) clearTimeout(delTimer.current);
+    delTimer.current = setTimeout(() => { setDelPhase('none'); setSelectMode(false); }, 2000);
+  };
 
   // dwupoziomowe menu jak pasek EDIT: pod-pasek (podopcje) NA GÓRZE, pasek główny [SELECT · ACTION] NA DOLE.
   // W koszu ACTION = [RESTORE · DELETE]. Nawigacja 1:1 z EDIT: ←/→ w aktywnym pasku, ↑ = pod-pasek, ↓ = główny.
   const SUB_SELECT = ['ALL', 'INVERSE', 'DESELECT'] as const;
   const SUB_ACTION = (isTrashOpen ? ['RESTORE', 'DELETE'] : ['MOVE', 'COPY', 'DELETE']) as readonly string[];
-  const subItems = selRoot === 0 ? SUB_SELECT : SUB_ACTION;
-  useEffect(() => { setSelSub(0); }, [selRoot, isTrashOpen]);
+  // SELECTION (0) = operacje na zaznaczeniu; SELECT (1) = oddaje fokus siatce, BRAK poziomu 2; ACTION (2) = operacje na plikach
+  const subItems: readonly string[] = selRoot === 0 ? SUB_SELECT : selRoot === 2 ? SUB_ACTION : [];
+  useEffect(() => { setSelSub(midIdx(subItems.length)); }, [selRoot, isTrashOpen, subItems.length]);
   const activateSub = (i: number) => {
     if (selRoot === 0) { if (i === 0) selectAll(); else if (i === 1) invertSel(); else clearSel(); return; }
     if (isTrashOpen) {
@@ -722,19 +762,24 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     }
   };
   // press: na pasku głównym (focus 0) wchodzi w pod-pasek; na pod-pasku (focus 1) odpala akcję (jak EDIT).
-  const selPress = () => { if (selFocus === 0) setSelFocus(1); else activateSub(selSub); };
+  const selPress = () => {
+    if (selFocus === 2) { toggleSelectAt(selected); return; }        // siatka: zaznacz/odznacz bieżący kafel
+    if (selFocus === 1) { activateSub(selSub); return; }
+    if (selRoot === 1) { setSelFocus(2); return; }                   // SELECT → oddaj sterowanie siatce
+    if (subItems.length > 0) setSelFocus(1);
+  };
   const selMoveH = (d: -1 | 1) => {
-    if (selFocus === 0) setSelRoot((r) => ((r + d + 2) % 2) as 0 | 1);
+    if (selFocus === 0) setSelRoot((r) => (r + d + 3) % 3);
     else setSelSub((s) => { const len = subItems.length; return (s + d + len) % len; });
   };
-  // ↑ (d=-1) → pod-pasek (focus 1, góra); ↓ (d=+1) → pasek główny (focus 0, dół) — spójnie z układem i z EDIT.
-  // W GÓRĘ nie odsłania poziomu 2 — do tego służy zatwierdzenie (press). W DÓŁ zwija z powrotem.
-  const selMoveV = (d: -1 | 1) => { if (d > 0) setSelFocus(0); };
+  // PION NIE PRZEŁĄCZA POZIOMÓW. W dół zwijał wcześniej poziom 2, ale przy jednoczesnym BACK-u okazało się
+  // to mylące (dwa różne gesty do tego samego, a joystick w innych kontekstach nawiguje po treści).
+  // Wejście w poziom 2 = zatwierdzenie (press/tap), wyjście = WYŁĄCZNIE BACK.
 
   // back: kolejno zamknij MENU → (edytor: menu edycji/pod-widok, a na końcu podgląd) → folder → feed
   const goBack = () => {
     if (delPhase === 'confirm') { cancelDelete(); return true; }
-    if (selectMode && selFocus === 1) { setSelFocus(0); return true; } // najpierw zwiń poziom 2
+    if (selectMode && selFocus !== 0) { setSelFocus(0); return true; } // najpierw wróć z siatki / poziomu 2 do menu
     if (selectMode) { exitSelect(); return true; }
     if (menuOpen) { setMenuOpen(false); return true; }
     if (viewerOpen) { if (!editor.goBack()) setViewerOpen(false); return true; }
@@ -791,8 +836,13 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   };
   useEffect(() => () => { if (navHideT.current) clearTimeout(navHideT.current); }, []);
 
+  // Przy OTWARTYM MENU wygaszamy klawisze zmieniające kontekst pod spodem: SIZE, FOLDERS/FEED, EXIT
+  // i BACK. Zostają puste, ale widoczne (konwencja z klawiszy 2/4 — `metal: []` robiłoby dziury
+  // w klawiaturze). Menu zamyka się klawiszem CLOSE MENU albo systemowym back.
   const keyboard: KeyboardConfig = {
-    screen: [
+    screen: menuOpen
+      ? [{ label: '' }, { label: '' }]
+      : [
       { label: 'SIZE', onPress: toggleView },
       // wewnątrz folderu = BACK; w ROOT (gallery view) i feedzie = EXIT (czerwony, przytrzymaj → wyjście z apki)
       canBack
@@ -800,7 +850,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
         : { label: 'EXIT', supporting: '[HOLD]', variant: 'risk', onHoldComplete: () => onExitApp?.(), holdMs: 1500 },
     ],
     metal: [
-      { type: 'label', upper: feedMode ? 'FOLDERS' : 'FEED', onPress: toggleFeed },
+      menuOpen ? { type: 'label', upper: '' } : { type: 'label', upper: feedMode ? 'FOLDERS' : 'FEED', onPress: toggleFeed },
       { type: 'label', upper: menuOpen ? 'CLOSE\nMENU' : 'MENU', variant: menuOpen ? 'primary' : undefined, onPress: toggleMenu },
     ],
     joystick: {
@@ -816,7 +866,14 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
       onRight: () => { if (menuOpen) return; if (feedMode && !viewerOpen) feedMoveH(1); else move(1); },    // podgląd: następne zdjęcie
       // feed: PŁYNNY przesuw sterowany wychyleniem (nie serią kroków) — patrz FeedGrid.navStart/navEnd.
       // Pion obsługuje wyłącznie ta ścieżka, więc onUp/onDown w feedzie celowo nic nie robią.
-      onDirStart: (d) => { if (feedMode && !menuOpen && !viewerOpen && (d === 'up' || d === 'down')) feedRef.current?.navStart(d === 'up' ? -1 : 1); },
+      // Pojedyncze pchnięcie = przeskok kursora na sąsiedni kafel (natychmiast). Jeśli wychylenie
+      // potrwa dłużej, FeedGrid przejdzie w płynny przesuw — patrz FeedGrid.navStart.
+      onDirStart: (d) => {
+        if (!feedMode || menuOpen || viewerOpen || (d !== 'up' && d !== 'down')) return;
+        const dir = d === 'up' ? -1 : 1;
+        feedMoveV(dir);
+        feedRef.current?.navStart(dir);
+      },
       onDirEnd: () => { if (feedMode) feedRef.current?.navEnd(); },
       onPress: menuOpen ? () => pickMenu(menuIndex) : viewerOpen ? closeViewer : enter,
       // przytrzymanie środka w siatce (nie w menu/podglądzie) → tryb zaznaczania; kursor chowany na czas trzymania
@@ -831,21 +888,26 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // (przeniesienie do kosza, odwracalne) → NIE high-risk. W koszu DELETE = TRWAŁE → czerwony + RESTORE.
   const selectKeyboard: KeyboardConfig = {
     screen: [
-      { label: 'DELETE', variant: isTrashOpen ? 'risk' : undefined, onPress: isTrashOpen ? askPermanent : askTrash },
-      { label: 'BACK', onPress: exitSelect },
+      // Sterowanie na SIATCE (po wejściu w SELECT) → CONFIRM oddaje fokus z powrotem do menu.
+      // Poza tym pierwszy klawisz jest pusty: DELETE zdjęty z klawiatury, usuwanie jest w menu ACTION.
+      selFocus === 2 ? { label: 'CONFIRM', variant: 'primary', onPress: () => setSelFocus(0) } : { label: '' },
+      { label: 'BACK', onPress: () => { if (selFocus !== 0) setSelFocus(0); else exitSelect(); } },
     ],
     metal: [
-      { type: 'label', upper: 'ALL', onPress: selectAll },
+      // ALL zdjęte — zaznaczanie wszystkiego jest w menu SELECT.
+      { type: 'label', upper: '' },
       isTrashOpen
         ? { type: 'label', upper: 'RESTORE', onPress: restoreSelected }
         : { type: 'label', upper: '', onPress: undefined },
     ],
     joystick: {
       highlighted: true,
-      onUp: () => selMoveV(-1),
-      onDown: () => selMoveV(1),
-      onLeft: () => selMoveH(-1),
-      onRight: () => selMoveH(1),
+      repeat: selFocus === 2, // po oddaniu sterowania siatce przytrzymanie przewija kafle jak zwykle
+      // focus 2 = nawigacja po kaflach (jak poza trybem zaznaczania); inaczej ruch po pozycjach menu
+      onUp: () => { if (selFocus === 2) { if (feedMode) feedMoveV(-1); else { bumpNavHide(); move(-cols); } } },
+      onDown: () => { if (selFocus === 2) { if (feedMode) feedMoveV(1); else { bumpNavHide(); move(cols); } } },
+      onLeft: () => { if (selFocus === 2) { if (feedMode) feedMoveH(-1); else move(-1); } else selMoveH(-1); },
+      onRight: () => { if (selFocus === 2) { if (feedMode) feedMoveH(1); else move(1); } else selMoveH(1); },
       onPress: selPress,
     },
   };
@@ -854,13 +916,33 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const confirmKeyboard: KeyboardConfig = {
     screen: delPhase === 'confirm'
       ? [
+          // Akcja destrukcyjna na PIERWSZYM klawiszu, wycofanie na PIĄTYM. W trakcie przytrzymania
+          // etykieta zmienia się na DELETING (pierścień postępu rysuje sam klawisz).
+          {
+            label: holding ? 'DELETING' : delMsg.permanent ? 'DELETE' : 'TRASH',
+            supporting: holding ? undefined : '[HOLD]',
+            variant: delMsg.permanent ? 'risk' : undefined,
+            onHoldStart: () => setHolding(true),
+            onHoldCancel: () => setHolding(false),
+            onHoldComplete: confirmDelete,
+            holdMs: 1200,
+          },
           { label: 'CANCEL', onPress: cancelDelete },
-          { label: delMsg.permanent ? 'DELETE' : 'TRASH', supporting: '[HOLD]', variant: delMsg.permanent ? 'risk' : undefined, onHoldComplete: confirmDelete, holdMs: 1200 },
         ]
-      : [
+      : delPhase === 'restored'
+        ? [{ label: '' }, { label: '' }] // po przywróceniu nie ma już czego cofać — panel sam znika
+        : [
+          // po usunięciu: UNDO na przytrzymanie (jak w rec_ai), w trakcie → RESTORING
           delMsg.permanent
             ? { label: 'CLOSE', onPress: exitSelect }
-            : { label: 'UNDO', onPress: undoTrash },
+            : {
+                label: holding ? 'RESTORING' : 'UNDO',
+                supporting: holding ? undefined : '[HOLD]',
+                onHoldStart: () => setHolding(true),
+                onHoldCancel: () => setHolding(false),
+                onHoldComplete: undoTrash,
+                holdMs: 1200,
+              },
           { label: 'CLOSE', onPress: exitSelect },
         ],
     metal: [
@@ -873,7 +955,9 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const cap = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: screen.olive.primary, ...phosphorGlow } as const;
   const pill = { fontFamily: font.bodyLgBold.family, fontSize: font.bodyLgBold.size, color: color.dark21 } as const;
 
-  // ramka kursora chowana podczas swipe-follow / przytrzymania joysticka (selEff=-1 → żaden kafel niepodświetlony)
+  // Ramka = KURSOR (gdzie jesteś), nie zaznaczenie. Zaznaczenie pokazuje wyłącznie checkbox — inaczej
+  // dwa różne znaczenia dzieliłyby jedno wyróżnienie. Kursor chowany tylko podczas swipe-follow /
+  // przytrzymania joysticka (selEff=-1 → żaden kafel niepodświetlony).
   const selEff = cursorHidden ? -1 : selected;
 
   const content = (
@@ -954,9 +1038,9 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
               return (
                 <View style={{ width: itemWidth, padding: gap / 2 }}>
                   {inside ? (
-                    <PhotoTile source={item as ImageSourcePropType} size={imgSize} selected={index === selEff || !!checked} images={diag.images} onPress={onTap} onLongPress={onLong} check={checked} />
+                    <PhotoTile source={item as ImageSourcePropType} size={imgSize} selected={index === selEff} images={diag.images} onPress={onTap} onLongPress={onLong} check={checked} />
                   ) : (
-                    <FolderTile folder={item as Folder} size={imgSize} selected={index === selEff || !!checked} images={diag.images} onPress={onTap} onLongPress={onLong} check={checked} danger={isTrashTile} />
+                    <FolderTile folder={item as Folder} size={imgSize} selected={index === selEff} images={diag.images} onPress={onTap} onLongPress={onLong} check={checked} danger={isTrashTile} />
                   )}
                 </View>
               );
@@ -1021,13 +1105,14 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
           rootIdx={selRoot}
           subIdx={selSub}
           subItems={subItems}
-          riskLabels={isTrashOpen ? SELECT_RISK : undefined}
-          onPickRoot={(i) => { setSelFocus(0); setSelRoot(i as 0 | 1); }}
+          riskLabels={SELECT_RISK} // DELETE zawsze na czerwono — także poza koszem (usuwanie to akcja destrukcyjna)
+          onPickRoot={(i) => { setSelFocus(0); setSelRoot(i); }}
           onPickSub={(i) => { setSelFocus(1); setSelSub(i); activateSub(i); }}
         />
       ) : null}
+      {/* kolor panelu wg FAZY (nie wg trwałości): pytanie = czerwone, wynik = fosforowy */}
       {delPhase !== 'none' ? (
-        <OverlayPanel tone={delMsg.permanent ? 'red' : 'phosphor'} title={delMsg.title} sub={delPhase === 'confirm' ? delMsg.sub : undefined} />
+        <OverlayPanel tone={delPhase === 'confirm' ? 'red' : 'phosphor'} title={delMsg.title} sub={delPhase === 'confirm' ? delMsg.sub : undefined} />
       ) : null}
     </>
   );

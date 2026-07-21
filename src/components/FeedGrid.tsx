@@ -122,9 +122,11 @@ const FeedTile = memo(function FeedTile({
       ) : null}
       {/* checkbox trybu zaznaczania — lewy-górny róg */}
       {check != null ? (
-        <View pointerEvents="none" style={{ position: 'absolute', top: 6, left: 6, width: 18, height: 18, borderRadius: 3, borderWidth: 2, borderColor: screen.olive.primary, backgroundColor: check ? screen.olive.primary : 'rgba(26,26,26,0.45)', alignItems: 'center', justifyContent: 'center' }}>
-          {check ? <Text style={{ fontFamily: font.monoBody.family, fontSize: 12, lineHeight: 13, color: color.dark21 }}>{'✓'}</Text> : null}
-        </View>
+        // Checkbox bez ptaszka (Figma 450:1861): niezaznaczony = fosforowy, ZAZNACZONY = ciemny.
+        <View
+          pointerEvents="none"
+          style={{ position: 'absolute', top: 6, left: 6, width: 18, height: 18, borderRadius: 3, borderWidth: 2, borderColor: screen.olive.primary, backgroundColor: check ? color.dark21 : screen.olive.primary }}
+        />
       ) : null}
     </Pressable>
   );
@@ -263,18 +265,16 @@ export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function 
   };
   const onLayout = (e: LayoutChangeEvent) => { const h = e.nativeEvent.layout.height; setViewH(h); setWindow(lastY.current, h); };
 
-  // ── JOYSTICK: przewijanie o STAŁY krok, z kotwicą pozycji ─────────────────────────────────────────
-  // Problem: wcześniej góra/dół szukały kafla NAD/POD bieżącym (`T.r ± T.k`), więc krok równał się
-  // WYSOKOŚCI bieżącego kafla — przy kaflu 3× przeskok był trzykrotny i przewijanie było nierówne.
-  // Teraz: jeden krok = JEDEN WIERSZ SIATKI (`step` = wysokość kafla 1× + odstęp; użycie samego `cell`
-  // rozjeżdżałoby wyrównanie o `gap` na krok). Przytrzymanie = powtarzanie tego samego kroku.
+  // ── JOYSTICK: pojedyncze pchnięcie = kafel, przytrzymanie = płynny przesuw ───────────────────────
+  // POJEDYNCZE pchnięcie w pionie przesuwa KURSOR na sąsiedni kafel — tym zajmuje się GalleryScreen
+  // (`feedMoveV`), bo to on trzyma zaznaczenie i preferowaną kolumnę. FeedGrid dostaje tu tylko
+  // zapowiedź: jeśli wychylenie potrwa dłużej niż CRUISE_DELAY_MS, przechodzimy w PŁYNNY przesuw.
   //
-  // KURSOR: w trakcie serii kroków NIE zaznaczamy niczego (jak przy swipie palcem). Na starcie serii
-  // zapamiętujemy POZYCJĘ zaznaczonego kafla na ekranie (górna krawędź + kolumna) i po zatrzymaniu
-  // wybieramy kafel, który znalazł się w tym samym miejscu. Dzięki temu zaznaczenie nie „przeskakuje"
-  // na środek ekranu i nie trzeba uzgadniać kroku z wysokością kafli. Efekt uboczny: znika `setSelected`
-  // przy KAŻDYM kroku, które przerysowywało całe drzewo ekranu (joystick był przez to wyraźnie
-  // wolniejszy od palca).
+  // W trybie płynnym kursor jest schowany (jak przy swipie palcem), a na starcie zapamiętujemy
+  // POZYCJĘ zaznaczonego kafla na ekranie (górna krawędź + kolumna). Po puszczeniu zaznaczamy kafel,
+  // który znalazł się w tym samym miejscu — dzięki temu zaznaczenie nie „przeskakuje" na środek
+  // ekranu. Przesuw jest liczony w px/s, więc jest równy niezależnie od wysokości mijanych kafli
+  // (kafel 3× nie powoduje potrójnego przeskoku, jak przy nawigacji kafel-po-kaflu).
   const navAnchor = useRef<{ top: number; col: number } | null>(null);
   const navT = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navRaf = useRef(0);
@@ -292,7 +292,20 @@ export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function 
     let idx = cellGrid[r]?.[a.col];
     for (let d = 1; idx == null && d < cols; d++) idx = cellGrid[r]?.[a.col - d] ?? cellGrid[r]?.[a.col + d];
     for (let dr = 1; idx == null && dr <= 2; dr++) idx = cellGrid[r + dr]?.[a.col] ?? cellGrid[r - dr]?.[a.col];
-    if (idx != null && idx !== selRef.current) { skipAutoOnce.current = true; onSelectAt(idx); }
+    if (idx == null) return;
+    // Kotwica pilnuje tylko GÓRNEJ krawędzi, a kafel 2×/3× jest wyższy niż jeden wiersz — potrafił więc
+    // wystawać poza dolną krawędź i kursor lądował „na granicy widoczności". Po wyborze dosuwamy widok
+    // o NIEZBĘDNE MINIMUM, żeby cały kafel był w kadrze (bez centrowania — to by szarpało pozycją).
+    const p = pos[idx];
+    if (p) {
+      const tileTop = p.r * step + inset;
+      const tileH = p.k * cell + (p.k - 1) * gap;
+      const top = curY.current;
+      const bottom = top + viewH;
+      if (tileTop < top) scrollToY(tileTop - inset, true);
+      else if (tileTop + tileH > bottom) scrollToY(tileTop + tileH - viewH + inset, true);
+    }
+    if (idx !== selRef.current) { skipAutoOnce.current = true; onSelectAt(idx); }
   };
 
   const scrollToY = (y: number, animated: boolean) => {
@@ -317,10 +330,9 @@ export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function 
     navRaf.current = requestAnimationFrame(navTick);
   };
 
-  const navStart = (dir: -1 | 1) => {
-    if (viewH <= 0) return;
-    navDir.current = dir;
-    if (navAnchor.current) return; // już jedziemy
+  // Wejście w tryb płynny: dopiero TERAZ chowamy kursor i stawiamy kotwicę (nie przy pchnięciu —
+  // pojedyncze pchnięcie ma zostać zwykłym przeskokiem kursora na sąsiedni kafel).
+  const navCruise = () => {
     const p = pos[selRef.current];
     // Kotwica MUSI leżeć w widocznym pasmie. Zaznaczony kafel bywa poza ekranem (po swipie palcem,
     // po powrocie z podglądu) — bez przycięcia kotwica wiernie odtwarzała tę pozycję i zaznaczenie
@@ -330,19 +342,25 @@ export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function 
       top: Math.max(0, Math.min(Math.max(0, viewH - step), rawTop)),
       col: p ? p.c : cols === 3 ? 1 : 0,
     };
-    onScrollActive?.(true); // chowa ramkę kursora na czas ruchu
+    onScrollActive?.(true); // chowa ramkę kursora na czas płynnego ruchu
+    navPrevT.current = 0;
+    navRaf.current = requestAnimationFrame(navTick);
+  };
+
+  const navStart = (dir: -1 | 1) => {
+    if (viewH <= 0) return;
+    navDir.current = dir;
+    if (navAnchor.current) return; // już jedziemy — zmieniamy tylko kierunek
     if (navT.current) clearTimeout(navT.current);
-    scrollToY(curY.current + dir * step, true); // tap = jeden wiersz
-    navT.current = setTimeout(() => {            // trzymanie → płynnie
-      navPrevT.current = 0;
-      navRaf.current = requestAnimationFrame(navTick);
-    }, CRUISE_DELAY_MS);
+    navT.current = setTimeout(navCruise, CRUISE_DELAY_MS);
   };
 
   const navEnd = () => {
     if (navT.current) { clearTimeout(navT.current); navT.current = null; }
     if (navRaf.current) { cancelAnimationFrame(navRaf.current); navRaf.current = 0; }
-    navT.current = setTimeout(navSettle, 120);
+    // Krótkie pchnięcie (nie doszło do trybu płynnego) → nic tu nie robimy: kursor przesunął już
+    // GalleryScreen. Settle dotyczy WYŁĄCZNIE przesuwu płynnego, bo tylko on chował kursor.
+    if (navAnchor.current) navT.current = setTimeout(navSettle, 120);
   };
 
   // Uchwyt przez ref-do-funkcji, żeby `useImperativeHandle` nie łapał nieaktualnego domknięcia.
@@ -356,21 +374,34 @@ export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function 
     if (navRaf.current) cancelAnimationFrame(navRaf.current);
   }, []);
 
-  // auto-scroll: widok podąża za zaznaczeniem (joystick/PREV/NEXT) — wyśrodkuj wiersz zaznaczonego kafla.
-  // `viewH` w zależnościach: po (re)montażu feeda (np. powrót z podglądu BACK) layout mierzy się PO pierwszym
-  // renderze — bez tego efekt odpalał się przy viewH=0 (skip) i nigdy nie przywracał pozycji → skok na górę listy.
+  // auto-scroll: widok podąża za zaznaczeniem (joystick/PREV/NEXT), ale TYLKO GDY TRZEBA.
+  // Dopóki zaznaczony kafel mieści się w całości w kadrze, widok STOI — przesuwa się dopiero, gdy kursor
+  // dojedzie do krawędzi, i wtedy o niezbędne minimum. Wcześniej każdy krok kursora CENTROWAŁ zaznaczony
+  // kafel, więc obszar jechał przy każdym ruchu, nawet w środku ekranu.
+  // WYJĄTEK: pierwsze dojście po (re)montażu — wtedy centrujemy, bo to przywrócenie pozycji po powrocie
+  // z podglądu; kafel na krawędzi byłby wtedy gorszy niż wyśrodkowany.
+  // `viewH` w zależnościach: po (re)montażu feeda layout mierzy się PO pierwszym renderze — bez tego efekt
+  // odpalał się przy viewH=0 (skip) i nigdy nie przywracał pozycji → skok na górę listy.
   const didScroll = useRef(false);
   useEffect(() => {
     const p = pos[selected];
     if (!p || viewH <= 0) return;
-    if (userScrolling.current) return; // kursor podąża za swipem (onScroll) → nie centruj, żeby nie walczyć ze swipem
-    if (skipAutoOnce.current) { skipAutoOnce.current = false; return; } // tuż po swipe: kursor już na miejscu, NIE re-centruj (nie „skacz")
-    const sizeSel = p.k * cell + (p.k - 1) * gap;
-    const target = Math.max(0, p.r * step + inset + sizeSel / 2 - viewH / 2);
-    const animated = didScroll.current; // pierwsze dojście (po layout) = przywrócenie bez animacji; kolejne (joystick) = z animacją
+    if (userScrolling.current) return; // kursor podąża za swipem (onScroll) → nie ruszaj, żeby nie walczyć ze swipem
+    if (skipAutoOnce.current) { skipAutoOnce.current = false; return; } // tuż po swipe: kursor już na miejscu
+    const tileTop = p.r * step + inset;
+    const tileH = p.k * cell + (p.k - 1) * gap;
+    const first = !didScroll.current;
     didScroll.current = true;
-    lastY.current = target; setWindow(target, viewH); // okno wirtualizacji od razu wokół celu (nie od góry)
-    try { scrollRef.current?.scrollTo({ y: target, animated }); } catch {}
+    let target: number | null = null;
+    if (first) {
+      target = Math.max(0, tileTop + tileH / 2 - viewH / 2); // przywrócenie pozycji → wyśrodkuj
+    } else if (tileTop < curY.current) {
+      target = tileTop - inset;                              // wyjechał górą → dosuń w górę
+    } else if (tileTop + tileH > curY.current + viewH) {
+      target = tileTop + tileH - viewH + inset;              // wyjechał dołem → dosuń w dół
+    }
+    if (target == null) return; // mieści się w kadrze → NIE ruszaj widoku
+    scrollToY(target, !first);  // przywrócenie bez animacji, ruch kursorem z animacją
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, cols, viewH]);
   useEffect(() => () => { if (settleT.current) clearTimeout(settleT.current); }, []);
@@ -405,7 +436,7 @@ export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function 
               // LQIP tylko dla kafli k>1. Dla zwykłych prop jest STALE `false`, więc ich `memo` nie psuje
               // się przy starcie/stopie przewijania (patrz historia: psujące się domknięcia = jank).
               lowQ={p.k > 1 ? scrolling : false}
-              selected={(i === selected && !hideCursor) || (!!selectMode && !!checkedAt?.(i))}
+              selected={i === selected && !hideCursor} // ramka = KURSOR; zaznaczenie pokazuje checkbox
               images={images}
               onOpen={openTile}
               onCycle={cycleTile}
