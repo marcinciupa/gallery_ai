@@ -333,6 +333,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const placeResolving = useRef<Set<string>>(new Set());
   const [feedPhotos, setFeedPhotos] = useState<ImageSourcePropType[]>([]);
   const [feedSpans, setFeedSpans] = useState<Record<string, number>>({}); // rozmiar kafla feeda: photoKey → 1..cols
+  const [momentsBig, setMomentsBig] = useState<Record<string, string>>({}); // MOMENTS: dzień → photoKey zdjęcia 2× (jedno na grupę)
   const [contentW, setContentW] = useState(0);
   const [photos, setPhotos] = useState<ImageSourcePropType[]>([]); // zdjęcia otwartego folderu (mock lub media)
 
@@ -400,6 +401,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
           if (p.feedCols === 2 || p.feedCols === 3) setFeedCols(p.feedCols);
           if (typeof p.feedMode === 'boolean') setFeedMode(p.feedMode);
           if (typeof p.momentsMode === 'boolean') setMomentsMode(p.momentsMode);
+          if (p.momentsBig && typeof p.momentsBig === 'object') setMomentsBig(p.momentsBig);
           if (p.feedSpans && typeof p.feedSpans === 'object') setFeedSpans(p.feedSpans);
         }
       } catch { /* brak/uszkodzone prefs → domyślne */ }
@@ -408,8 +410,8 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   }, []);
   useEffect(() => {
     if (!prefsLoaded.current) return; // nie nadpisuj zapisu domyślnymi zanim wczytamy
-    AsyncStorage.setItem(PREFS_KEY, JSON.stringify({ galleryCols, feedCols, feedMode, momentsMode, feedSpans })).catch(() => {});
-  }, [galleryCols, feedCols, feedMode, momentsMode, feedSpans]);
+    AsyncStorage.setItem(PREFS_KEY, JSON.stringify({ galleryCols, feedCols, feedMode, momentsMode, feedSpans, momentsBig })).catch(() => {});
+  }, [galleryCols, feedCols, feedMode, momentsMode, feedSpans, momentsBig]);
 
   // widoczne foldery = whitelist (jeśli niepusta) − blacklist. Reszta ekranu (siatka/feed/nawigacja) używa TYCH.
   // Źródło (`allFolders`) i `media` podaje App (jedno useMedia — współdzielone z Settings).
@@ -506,31 +508,46 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // MOMENTS bierze te same media co feed, ale ograniczone do folderów aparatu (lub ręcznie wybranych).
   const momentsFolders = useMemo(() => momentsFolderIds(allFolders as any[], moments), [allFolders, moments]);
   const momentsView = useMemo(() => {
-    if (!momentsFolders.length) return feedView; // brak dopasowania (np. brak folderów aparatu) → pokaż wszystko
-    const set = new Set(momentsFolders);
-    return feedView.filter((s) => set.has((s as any)?.albumId));
+    const filtered = momentsFolders.length
+      ? feedView.filter((s) => new Set(momentsFolders).has((s as any)?.albumId))
+      : feedView;
+    // MUSI być GLOBALNIE po dacie malejąco. feedView jest sklejeniem folderów (każdy z osobna date-desc),
+    // więc bez tego dodany folder dokleja zdjęcia na KONIEC listy (pod spód MOMENTS) zamiast wpleść je
+    // chronologicznie — filtr rósł (434→934), ale top się nie zmieniał.
+    return [...filtered].sort((a, b) => ((b as any)?.creationTime ?? 0) - ((a as any)?.creationTime ?? 0));
   }, [feedView, momentsFolders]);
 
-  // Rozwiąż nazwy miejsc dla dni obecnych w MOMENTS — jeden asset na dzień, w tle, z cache.
+  // Rozwiąż nazwy miejsc dla dni w MOMENTS — próbkujemy KILKA zdjęć dnia (bo dzień może mieć wiele
+  // lokalizacji), zliczamy miasta i formatujemy: „[najczęstsze], [drugie], [trzecie] & more".
   useEffect(() => {
     if (!momentsMode || !media || DESIGN) return;
     const dayKeyOf = (ms: number) => { const d = new Date(ms); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
-    const repByDay: Record<string, string> = {};
+    const SAMPLE_PER_DAY = 5;
+    const idsByDay: Record<string, string[]> = {};
     for (const src of momentsView) {
       const t = (src as any)?.creationTime; const id = (src as any)?.uri;
       if (t == null || !id) continue;
       const k = dayKeyOf(t);
-      if (!(k in repByDay)) repByDay[k] = id; // pierwszy (najnowszy) tego dnia = reprezentant
+      (idsByDay[k] ||= []).length < SAMPLE_PER_DAY && idsByDay[k].push(id);
     }
+    // Miasta wg CZĘSTOŚCI: do 3 nazw, „& more" gdy jest ich więcej. Puste → brak miejsca.
+    const formatPlaces = (cities: string[]): string => {
+      const count = new Map<string, number>();
+      for (const c of cities) count.set(c, (count.get(c) ?? 0) + 1);
+      const ranked = [...count.keys()].sort((a, b) => (count.get(b)! - count.get(a)!));
+      if (ranked.length === 0) return '';
+      const head = ranked.slice(0, 3).join(', ');
+      return ranked.length > 3 ? `${head} & more` : head;
+    };
     let cancelled = false;
     (async () => {
-      for (const [day, id] of Object.entries(repByDay)) {
+      for (const [day, ids] of Object.entries(idsByDay)) {
         if (cancelled) return;
         if (day in placeByDay || placeResolving.current.has(day)) continue;
         placeResolving.current.add(day);
-        const place = await media.placeOfAsset(id);
-        if (cancelled) return;
-        setPlaceByDay((m) => ({ ...m, [day]: place ?? '' }));
+        const cities: string[] = [];
+        for (const id of ids) { const c = await media.placeOfAsset(id); if (cancelled) return; if (c) cities.push(c); }
+        setPlaceByDay((m) => ({ ...m, [day]: formatPlaces(cities) }));
       }
     })();
     return () => { cancelled = true; };
@@ -654,6 +671,20 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
 
   // uchwyt trójkąta: cykl rozmiaru kafla feeda 1→2→…→cols→1 (limit = liczba kolumn).
   // Klucz = stabilne photoKey zdjęcia (nie indeks) → wyróżnienie zostaje przy TYM zdjęciu między sesjami.
+  // MOMENTS: dzień lokalny danego kafla (do wykluczania 2× w obrębie grupy).
+  const momDay = (i: number): string | null => {
+    const t = (momentsView[i] as any)?.creationTime; if (t == null) return null;
+    const d = new Date(t); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  };
+  // Powiększenie 2× jednego zdjęcia w grupie — JEDNO na dzień. Ponowne na tym samym = zmniejszenie;
+  // na innym = przeniesienie (poprzednie automatycznie wraca do 1×, bo trzymamy 1 klucz na dzień).
+  const cycleMomentBig = (i: number) => {
+    const day = momDay(i); const src = momentsView[i]; if (!day || src == null) return;
+    const key = photoKey(src);
+    setMomentsBig((m) => { const nx = { ...m }; if (nx[day] === key) delete nx[day]; else nx[day] = key; return nx; });
+  };
+  const isMomentBig = (i: number): boolean => { const day = momDay(i); const src = momentsView[i]; return !!day && src != null && momentsBig[day] === photoKey(src); };
+
   const cycleSpan = (i: number) =>
     setFeedSpans((s) => {
       const src = feedView[i];
@@ -1083,6 +1114,8 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
               onOpen={selectMode ? toggleSelectAt : openViewerAt}
               onSelectAt={(i) => setSelected(i)}
               onScrollActive={setCursorHidden}
+              spanOf={(i) => (isMomentBig(i) ? 2 : 1)}
+              onCycleSpan={cycleMomentBig}
               selectMode={selectMode}
               checkedAt={(i) => { const s = momentsView[i]; return s != null && selectedIds.has(photoKey(s)); }}
               onLongPressAt={enterSelect}

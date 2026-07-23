@@ -10,7 +10,7 @@
  * (bez ~N× `getUri`). `denied` tylko przy realnym braku zgody; błąd zapytań → `error` (+ komunikat).
  */
 import { useEffect, useState } from 'react';
-import { Platform, ImageSourcePropType } from 'react-native';
+import { Platform, PermissionsAndroid, ImageSourcePropType } from 'react-native';
 import { getAiTags } from '../lib/aiTags';
 
 export type MediaStatus = 'idle' | 'loading' | 'denied' | 'ready' | 'error' | 'unsupported';
@@ -24,6 +24,9 @@ export type PhotoSource = { uri: string; raw?: boolean; ai?: boolean; mediaWidth
 // Formaty RAW (po rozszerzeniu nazwy pliku). Detekcja best-effort — filename z metadanych, gdy dostępny.
 const RAW_RE = /\.(dng|arw|cr[23w]|nef|nrw|orf|raf|rw2|pef|sr[2fw]|raw|x3f|3fr|fff|iiq|kdc|mos|mrw|dcr|k25)$/i;
 const isRaw = (name?: string | null) => !!name && RAW_RE.test(name);
+// Jednorazowa prośba o ACCESS_MEDIA_LOCATION (runtime) — patrz placeOfAsset.
+let mediaLocAsked = false;
+
 const flag = (m: any, tags: Set<string>): PhotoSource => ({ uri: m.id, raw: isRaw(m.filename), ai: tags.has(m.id), mediaWidth: m.width ?? null, mediaHeight: m.height ?? null, filename: m.filename ?? null, creationTime: m.creationTime ?? null });
 // count opcjonalny — świadomie NIE liczymy zdjęć na starcie (skan wszystkich metadanych = lawina GC = jank).
 export type MediaFolder = { id: string; name: string; cover?: ImageSourcePropType; count?: number };
@@ -136,20 +139,26 @@ export function useMedia() {
   const placeOfAsset = async (assetId: string): Promise<string | null> => {
     if (Platform.OS === 'web') return null;
     try {
-      // WAŻNE: getAssetInfoAsync z GŁÓWNEGO importu RZUCA w runtime (deprecated, wygaszone) — działa
-      // tylko wersja z `expo-media-library/legacy`. Tam AssetInfo.location ma GPS.
-      const Legacy: any = await import('expo-media-library/legacy');
-      const info = await Legacy.getAssetInfoAsync(assetId);
-      const loc = info?.location;
-      if (!loc || loc.latitude == null || loc.longitude == null) return null;
+      // Uprawnienie lokalizacji (dla reverseGeocode) — poproś, jeśli jeszcze nie ma.
       const Loc: any = await import('expo-location');
       if (!(await Loc.getForegroundPermissionsAsync()).granted) {
         if (!(await Loc.requestForegroundPermissionsAsync()).granted) return null;
       }
+      // ACCESS_MEDIA_LOCATION — RUNTIME (API 29+); bez niego system zeruje GPS w EXIF. Deklaracja w
+      // manifeście (plugin expo-media-library isAccessMediaLocationEnabled) NIE wystarcza — trzeba poprosić.
+      if (Platform.OS === 'android' && !mediaLocAsked) {
+        mediaLocAsked = true;
+        try { await PermissionsAndroid.request('android.permission.ACCESS_MEDIA_LOCATION' as any); } catch {}
+      }
+      // GPS bierzemy z NOWEGO class-based API: `new Asset(id).getLocation()`. Legacy getAssetInfoAsync
+      // NIE działa, bo id z Query to content:// URI (a legacy oczekuje numerycznego _ID → zwraca null).
+      const ML: any = await import('expo-media-library');
+      const loc = await new ML.Asset(assetId).getLocation();
+      if (!loc || loc.latitude == null || loc.longitude == null) return null;
       const res = await Loc.reverseGeocodeAsync({ latitude: loc.latitude, longitude: loc.longitude });
       const a = res?.[0];
       return a ? (a.city || a.subregion || a.region || a.country || null) : null;
     } catch { return null; }
-  };
+  };;
   return { folders, status, error, loadPhotos, deleteItems, reload, placeOfAsset };
 }
