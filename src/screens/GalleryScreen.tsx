@@ -17,8 +17,9 @@ import { MenuBar } from '../components/chrome/MenuBar';
 import { ScreenTopBar, Mode, DisplayMode } from './ScreenChrome';
 import { useMedia } from '../hooks/useMedia';
 import { scrollFlag } from '../components/PerfHud';
-import { applyLibraryFilter } from '../hooks/useLibraryFilter';
+import { applyLibraryFilter, momentsFolderIds } from '../hooks/useLibraryFilter';
 import { FeedGridHandle, FeedGrid, packFeed } from '../components/FeedGrid';
+import { MomentsGrid, MomentsGridHandle } from '../components/MomentsGrid';
 import { useImageEditor } from './EditorScreen';
 import { MOCK_FOLDERS, type Folder } from './mockFolders';
 import { Diag, DIAG_ALL } from '../lib/diag';
@@ -32,6 +33,11 @@ export type { Folder };
 
 const phosphorGlow = {
   textShadowColor: textShadow.phosphor.color,
+  textShadowRadius: textShadow.phosphor.radius,
+  textShadowOffset: { width: 0, height: 0 },
+} as const;
+const redGlow = {
+  textShadowColor: 'rgba(255,76,76,0.25)',
   textShadowRadius: textShadow.phosphor.radius,
   textShadowOffset: { width: 0, height: 0 },
 } as const;
@@ -165,9 +171,10 @@ const PhotoTile = memo(function PhotoTile({ source, size, selected, images, onPr
 const MENU_ITEMS = ['SELECT', 'SORT', 'FILTER MEDIA', 'SHOW HIDDEN ELEMENTS', 'OPEN TRASH BIN', 'SETTINGS'] as const;
 // W PODGLĄDZIE menu dotyczy pojedynczego zdjęcia, więc pozycje operujące na LIŚCIE (zaznaczanie,
 // sortowanie, filtrowanie, ukrywanie) nie mają tam sensu — zostają tylko te działające zawsze.
-const MENU_ITEMS_VIEWER = ['OPEN TRASH BIN', 'SETTINGS'] as const;
+const MENU_ITEMS_VIEWER = ['DELETE', 'OPEN TRASH BIN', 'SETTINGS'] as const;
+const MENU_RISK = ['DELETE'] as const; // pozycje MENU podświetlane na czerwono po wybraniu
 
-function GalleryMenu({ index, onPick, items = MENU_ITEMS, leftHanded = false }: { index: number; onPick: (i: number) => void; items?: readonly string[]; leftHanded?: boolean }) {
+function GalleryMenu({ index, onPick, items = MENU_ITEMS, leftHanded = false, riskLabels }: { index: number; onPick: (i: number) => void; items?: readonly string[]; leftHanded?: boolean; riskLabels?: readonly string[] }) {
   const txt = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size } as const;
   // popover trzyma się klawisza MENU: domyślnie prawy dolny róg; w trybie left-handed klawiatura jest
   // lustrzana → MENU po lewej, więc i menu po lewej.
@@ -177,6 +184,10 @@ function GalleryMenu({ index, onPick, items = MENU_ITEMS, leftHanded = false }: 
     >
       {items.map((label, i) => {
         const sel = i === index;
+        // pozycja RYZYKOWNA (DELETE): po WYBRANIU (kursor na niej) tekst i bullet na czerwono
+        const risk = !!riskLabels?.includes(label);
+        const fg = sel ? (risk ? screen.red.primary : screen.olive.primary) : color.dark21;
+        const glowSel = risk ? redGlow : phosphorGlow;
         // Bullet TYLKO przy zaznaczonej pozycji (Figma 360:5309) — i tylko tam przesuwa etykietę w prawo.
         // Niezaznaczone etykiety zaczynają się przy samej krawędzi, na równi z lewym brzegiem pigułki;
         // rezerwowanie miejsca PRZED nimi dałoby wcięcie, którego w projekcie nie ma.
@@ -190,8 +201,8 @@ function GalleryMenu({ index, onPick, items = MENU_ITEMS, leftHanded = false }: 
             onPress={() => onPick(i)}
             style={{ flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', paddingVertical: 2, paddingRight: 4, paddingLeft: 2, borderRadius: 2, backgroundColor: sel ? color.dark21 : 'transparent' }}
           >
-            {sel ? <Text style={{ ...txt, color: screen.olive.primary, ...phosphorGlow }}>{'•'}</Text> : null}
-            <Text style={{ ...txt, color: sel ? screen.olive.primary : color.dark21, ...(sel ? phosphorGlow : null) }}>{label}</Text>
+            {sel ? <Text style={{ ...txt, color: fg, ...glowSel }}>{'•'}</Text> : null}
+            <Text style={{ ...txt, color: fg, ...(sel ? glowSel : null) }}>{label}</Text>
             {sel ? null : (
               <View style={{ opacity: 0 }}>
                 <Text style={txt}>{'•'}</Text>
@@ -211,7 +222,9 @@ function GalleryMenu({ index, onPick, items = MENU_ITEMS, leftHanded = false }: 
  * responderem), więc dotknięcia i tak trafiałyby w siatkę pod spodem.
  */
 function MenuScrim() {
-  return <Pressable onPress={() => {}} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.75)' }} />;
+  // Tylko BLOKADA DOTYKU (przezroczysta). Przygaszenie treści do 25% robi opacity na content_area /
+  // podglądzie — user chce realnej WIDOCZNOŚCI 25%, nie ciemnej nakładki.
+  return <Pressable onPress={() => {}} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />;
 }
 
 // KOSZ (app-level, soft-delete): usuwanie = przeniesienie do kosza (pliki zostają na dysku, tylko ukryte).
@@ -301,7 +314,7 @@ const photoKey = (src: ImageSourcePropType): string =>
 const FOLDER_GAP = 8; // odstęp między kolumnami w siatce folderów (ROOT)
 const PHOTO_GAP = 8; //  odstęp między kolumnami w siatce zdjęć (spójny z feedem — FEED_GAP)
 
-export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings, onExitApp, media, allFolders = EMPTY_FOLDERS, included = [], excluded = [], hidden = [], displayMode = 'IMMERSIVE', diag = DIAG_ALL, leftHanded = false, promptBooster = false }: { mode?: Mode; onCycleMode?: () => void; onOpenSettings?: () => void; onExitApp?: () => void; media?: ReturnType<typeof useMedia>; allFolders?: Folder[]; included?: string[]; excluded?: string[]; hidden?: string[]; displayMode?: DisplayMode; diag?: Diag; leftHanded?: boolean; promptBooster?: boolean } = {}) {
+export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings, onExitApp, media, allFolders = EMPTY_FOLDERS, included = [], excluded = [], hidden = [], moments = [], displayMode = 'IMMERSIVE', diag = DIAG_ALL, leftHanded = false, promptBooster = false }: { mode?: Mode; onCycleMode?: () => void; onOpenSettings?: () => void; onExitApp?: () => void; media?: ReturnType<typeof useMedia>; allFolders?: Folder[]; included?: string[]; excluded?: string[]; hidden?: string[]; moments?: string[]; displayMode?: DisplayMode; diag?: Diag; leftHanded?: boolean; promptBooster?: boolean } = {}) {
   // rozmiar miniatur (2=medium ↔ 3=small) — NIEZALEŻNY dla gallery view i feed view
   const [galleryCols, setGalleryCols] = useState<2 | 3>(2);
   const [feedCols, setFeedCols] = useState<2 | 3>(2);
@@ -312,6 +325,12 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const [menuOpen, setMenuOpen] = useState(false); // kontekstowe MENU (popover)
   const [menuIndex, setMenuIndex] = useState(0);   // zaznaczona pozycja menu
   const [feedMode, setFeedMode] = useState(false); // FEED = płaska siatka WSZYSTKICH mediów (vs foldery)
+  const [momentsMode, setMomentsMode] = useState(false); // MOMENTS = te same media pogrupowane po dacie
+  const momentsRef = useRef<MomentsGridHandle>(null);
+  // MOMENTS: nazwa miejsca per grupa-dzień (klucz = dzień lokalny). Rozwiązywana LENIWIE i tylko dla
+  // 1 reprezentanta na dzień (getAssetInfoAsync jest drogie). `''` = już próbowano, brak miejsca.
+  const [placeByDay, setPlaceByDay] = useState<Record<string, string>>({});
+  const placeResolving = useRef<Set<string>>(new Set());
   const [feedPhotos, setFeedPhotos] = useState<ImageSourcePropType[]>([]);
   const [feedSpans, setFeedSpans] = useState<Record<string, number>>({}); // rozmiar kafla feeda: photoKey → 1..cols
   const [contentW, setContentW] = useState(0);
@@ -380,6 +399,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
           if (p.galleryCols === 2 || p.galleryCols === 3) setGalleryCols(p.galleryCols);
           if (p.feedCols === 2 || p.feedCols === 3) setFeedCols(p.feedCols);
           if (typeof p.feedMode === 'boolean') setFeedMode(p.feedMode);
+          if (typeof p.momentsMode === 'boolean') setMomentsMode(p.momentsMode);
           if (p.feedSpans && typeof p.feedSpans === 'object') setFeedSpans(p.feedSpans);
         }
       } catch { /* brak/uszkodzone prefs → domyślne */ }
@@ -388,8 +408,8 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   }, []);
   useEffect(() => {
     if (!prefsLoaded.current) return; // nie nadpisuj zapisu domyślnymi zanim wczytamy
-    AsyncStorage.setItem(PREFS_KEY, JSON.stringify({ galleryCols, feedCols, feedMode, feedSpans })).catch(() => {});
-  }, [galleryCols, feedCols, feedMode, feedSpans]);
+    AsyncStorage.setItem(PREFS_KEY, JSON.stringify({ galleryCols, feedCols, feedMode, momentsMode, feedSpans })).catch(() => {});
+  }, [galleryCols, feedCols, feedMode, momentsMode, feedSpans]);
 
   // widoczne foldery = whitelist (jeśli niepusta) − blacklist. Reszta ekranu (siatka/feed/nawigacja) używa TYCH.
   // Źródło (`allFolders`) i `media` podaje App (jedno useMedia — współdzielone z Settings).
@@ -430,17 +450,18 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // FEED — załaduj media, gdy wejdziemy w tryb feed. Web: mock (złączone zdjęcia folderów). Natywnie:
   // zbierz media ze WSZYSTKICH zdefiniowanych folderów (Promise.all + flatten).
   useEffect(() => {
-    if (!feedMode) return;
-    // feed respektuje filtr biblioteki: bierzemy tylko WIDOCZNE foldery (`folders`) — bez syntetycznego kosza
+    if (!feedMode && !momentsMode) return;
+    // feed/moments respektują filtr biblioteki: bierzemy tylko WIDOCZNE foldery (`folders`) — bez syntetycznego kosza
     const realFolders = folders.filter((f) => f.id !== TRASH_ID);
     if (DESIGN) { const raw = realFolders.flatMap((f) => f.photos ?? []); feedRaw.current = raw; setFeedPhotos(sortPhotos(raw, sortMode)); return; }
     if (!media) { setFeedPhotos([]); return; }
     let cancelled = false;
-    Promise.all(realFolders.map((f) => media.loadPhotos(f.id).catch(() => [] as ImageSourcePropType[])))
+    // taguj albumId per folder → MOMENTS filtruje po folderach aparatu (patrz momentsFolderIds)
+    Promise.all(realFolders.map((f) => media.loadPhotos(f.id).then((ps) => ps.map((p) => ({ ...(p as any), albumId: f.id })) as ImageSourcePropType[]).catch(() => [] as ImageSourcePropType[])))
       .then((lists) => { if (!cancelled) { feedRaw.current = lists.flat(); setFeedPhotos(sortPhotos(feedRaw.current, sortMode)); } });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [feedMode, folders]);
+  }, [feedMode, momentsMode, folders]);
   // re-sort BEZ ponownego zapytania (raw w refie) + kursor na górę (kolejność się zmieniła)
   useEffect(() => {
     setFeedPhotos(sortPhotos(feedRaw.current, sortMode));
@@ -482,12 +503,45 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     [isTrashOpen, trashValues, photos, trashedKeys]
   );
   const feedView = useMemo(() => feedPhotos.filter((s) => !trashedKeys.has(photoKey(s))), [feedPhotos, trashedKeys]);
-  const n = feedMode ? feedView.length : inside ? photosView.length : folders.length;
+  // MOMENTS bierze te same media co feed, ale ograniczone do folderów aparatu (lub ręcznie wybranych).
+  const momentsFolders = useMemo(() => momentsFolderIds(allFolders as any[], moments), [allFolders, moments]);
+  const momentsView = useMemo(() => {
+    if (!momentsFolders.length) return feedView; // brak dopasowania (np. brak folderów aparatu) → pokaż wszystko
+    const set = new Set(momentsFolders);
+    return feedView.filter((s) => set.has((s as any)?.albumId));
+  }, [feedView, momentsFolders]);
+
+  // Rozwiąż nazwy miejsc dla dni obecnych w MOMENTS — jeden asset na dzień, w tle, z cache.
+  useEffect(() => {
+    if (!momentsMode || !media || DESIGN) return;
+    const dayKeyOf = (ms: number) => { const d = new Date(ms); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
+    const repByDay: Record<string, string> = {};
+    for (const src of momentsView) {
+      const t = (src as any)?.creationTime; const id = (src as any)?.uri;
+      if (t == null || !id) continue;
+      const k = dayKeyOf(t);
+      if (!(k in repByDay)) repByDay[k] = id; // pierwszy (najnowszy) tego dnia = reprezentant
+    }
+    let cancelled = false;
+    (async () => {
+      for (const [day, id] of Object.entries(repByDay)) {
+        if (cancelled) return;
+        if (day in placeByDay || placeResolving.current.has(day)) continue;
+        placeResolving.current.add(day);
+        const place = await media.placeOfAsset(id);
+        if (cancelled) return;
+        setPlaceByDay((m) => ({ ...m, [day]: place ?? '' }));
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [momentsMode, momentsView]);
+  const n = momentsMode ? momentsView.length : feedMode ? feedView.length : inside ? photosView.length : folders.length;
   const gap = inside ? PHOTO_GAP : FOLDER_GAP;
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (n <= 0 || feedMode || viewerOpen) return; // feed ma własny auto-scroll; przy otwartym podglądzie siatka jest odmontowana
+    if (n <= 0 || feedMode || momentsMode || viewerOpen) return; // feed/moments mają własny auto-scroll; przy podglądzie siatka odmontowana
     if (gridScrolling.current) return;             // kursor podąża za swipem (onScroll) → nie centruj, nie walcz ze swipem
     if (gridSkipAuto.current) { gridSkipAuto.current = false; return; } // tuż po swipe: kursor już na kaflu → nie „snapuj"
     // FlatList z numColumns pracuje na WIERSZACH (getItemCount = ceil(n/cols)), więc scrollToIndex oczekuje
@@ -539,7 +593,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     setColsActive((c) => Math.max(2, Math.min(3, dir === 'out' ? c - 1 : c + 1)) as 2 | 3);
   // press: FEED → podgląd; ROOT → wejdź w folder; folder → podgląd zaznaczonego zdjęcia
   const enter = () => {
-    if (feedMode) { if (n > 0) setViewerOpen(true); return; }
+    if (feedMode || momentsMode) { if (n > 0) setViewerOpen(true); return; }
     if (!inside) { setOpenFolder(selected); return; }
     if (n > 0) setViewerOpen(true);
   };
@@ -549,8 +603,13 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // NIE czyścimy feedSpans — powiększone/wyróżnione kafle mają być zapamiętane (persystencja) między sesjami.
   const toggleFeed = () => {
     setMenuOpen(false); setViewerOpen(false); setOpenFolder(null); setSelected(0);
-    setFeedMode((f) => !f);
+    // cykl: FOLDERS → FEED → MOMENTS → FOLDERS
+    if (!feedMode && !momentsMode) { setFeedMode(true); }
+    else if (feedMode) { setFeedMode(false); setMomentsMode(true); }
+    else { setMomentsMode(false); }
   };
+  // etykieta klawisza = NASTĘPNY widok w cyklu
+  const nextViewLabel = !feedMode && !momentsMode ? 'FEED' : feedMode ? 'MOMENTS' : 'FOLDERS';
   // FeedGrid pozycjonuje po indeksie → przełóż wyróżnienia (photoKey → span) na indeks bieżącego feeda.
   const feedSpansByIndex = useMemo(() => {
     const out: Record<number, number> = {};
@@ -607,7 +666,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
 
   // EDYTOR — pełnoekranowy podgląd + edycja (Figma „fullscreen_view/edit"). Aktywny, gdy `viewerOpen`;
   // przejmuje treść ekranu i klawiaturę. Źródło = zaznaczone zdjęcie (feed lub wnętrze folderu).
-  const currentSource = (feedMode ? feedView : photosView)[selected];
+  const currentSource = (momentsMode ? momentsView : feedMode ? feedView : photosView)[selected];
   const editor = useImageEditor({
     source: currentSource,
     open: viewerOpen,
@@ -624,7 +683,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // IMMERSIVE — deskryptor renderowany przez App w ROOCIE (poza obudową). Współdzieli `selected` z podglądem,
   // więc wyjście wraca na to samo zdjęcie. Lista = aktywne źródło (feed lub wnętrze folderu).
   const immersive = viewerOpen && immersiveOpen && currentSource
-    ? { photos: (feedMode ? feedView : photosView), index: selected, setIndex: (i: number) => setSelected(i), close: () => setImmersiveOpen(false), info: editor.info }
+    ? { photos: (momentsMode ? momentsView : feedMode ? feedView : photosView), index: selected, setIndex: (i: number) => setSelected(i), close: () => setImmersiveOpen(false), info: editor.info }
     : null;
 
   // MENU
@@ -632,7 +691,13 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // nawigacja zapętlona (loop): z końca wracamy na początek i odwrotnie
   // Lista pozycji zależy od kontekstu — `pickMenu`/`menuMove` MUSZĄ indeksować po niej, nie po stałej
   // MENU_ITEMS, bo po odfiltrowaniu pozycji indeksy się przesuwają i klikałoby się nie to, co widać.
-  const menuItems: readonly string[] = viewerOpen ? MENU_ITEMS_VIEWER : MENU_ITEMS;
+  // DELETE pojedynczego elementu w MENU — wszędzie POZA widokiem folderów (ROOT). Pod SELECT.
+  const inFileGrid = !viewerOpen && (feedMode || momentsMode || inside);
+  const menuItems: readonly string[] = viewerOpen
+    ? MENU_ITEMS_VIEWER
+    : inFileGrid
+      ? ['SELECT', 'DELETE', 'SORT', 'FILTER MEDIA', 'SHOW HIDDEN ELEMENTS', 'OPEN TRASH BIN', 'SETTINGS']
+      : MENU_ITEMS;
   const menuMove = (d: number) => setMenuIndex((i) => (i + d + menuItems.length) % menuItems.length);
   const pickMenu = (i: number) => {
     const item = menuItems[i];
@@ -642,6 +707,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     setMenuOpen(false);
     if (item === 'SELECT') { enterSelect(viewerOpen ? undefined : selected); return; } // wejście w tryb zaznaczania (zaznacz bieżący)
     if (item === 'OPEN TRASH BIN') { const ti = folders.findIndex((f) => f.id === TRASH_ID); if (ti >= 0) { setFeedMode(false); setOpenFolder(ti); } else showMenuToast('TRASH EMPTY'); return; }
+    if (item === 'DELETE') { deleteCurrent(); return; }
     if (item === 'SETTINGS') { onOpenSettings?.(); return; }
     // FILTER MEDIA — dorobimy (backlog)
   };
@@ -651,18 +717,19 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   useEffect(() => { setMenuIndex((i) => Math.min(i, menuItems.length - 1)); }, [menuItems.length]);
 
   // ── TRYB ZAZNACZANIA ────────────────────────────────────────────────────────────────────────────
-  const curList: any[] = feedMode ? feedView : inside ? photosView : folders;
+  const curList: any[] = momentsMode ? momentsView : feedMode ? feedView : inside ? photosView : folders;
   const isFolderView = !feedMode && !inside;
   // klucz elementu: folder.id (ROOT) lub photoKey (feed/wnętrze). KOSZ jako kafel folderu jest NIEzaznaczalny.
   const keyOfIndex = (i: number): string | undefined => {
     const it = curList[i];
     if (it == null) return undefined;
-    if (isFolderView) return (it as Folder).id === TRASH_ID ? undefined : (it as Folder).id;
+    if (isFolderView) return undefined; // FOLDERÓW nie zaznaczamy — tylko pliki (wnętrze / feed / moments)
     return photoKey(it as ImageSourcePropType);
   };
   const allKeys = (): string[] => curList.map((_, i) => keyOfIndex(i)).filter(Boolean) as string[];
 
   const enterSelect = (i?: number) => {
+    if (isFolderView) return; // ROOT = foldery: brak zaznaczania (zaznaczamy tylko pliki)
     setMenuOpen(false); setViewerOpen(false); setImmersiveOpen(false); setCursorHidden(false);
     setSelectMode(true); setSelFocus(0); setSelRoot(1); setSelSub(0); setDelPhase('none'); // selRoot 1 = SELECT (środek)
     const k = i != null ? keyOfIndex(i) : undefined;
@@ -725,6 +792,18 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     if (!keys.length) { showMenuToast('NOTHING SELECTED'); return; }
     restoreFromTrash(keys); setSelectedIds(new Set()); showMenuToast('RESTORED');
   };
+  // DELETE z menu PODGLĄDU: dotyczy pojedynczego, bieżącego zdjęcia (nie zaznaczenia). Podpinamy je pod
+  // ten sam przepływ co tryb zaznaczania — ustawiamy `selectedIds` na bieżący klucz i pytamy. W koszu =
+  // trwałe (askPermanent), poza koszem = do kosza (askTrash). Po zakończeniu zamykamy podgląd (timer niżej).
+  // DELETE z MENU dla POJEDYNCZEGO elementu (podgląd lub kursor w feed/moments/wnętrzu). W koszu = trwałe.
+  const deleteCurrent = () => {
+    const k = keyOfIndex(selected);
+    if (!k) return;
+    setSelectedIds(new Set([k]));
+    if (isTrashOpen) { setDelMsg({ title: 'DELETE FOREVER?', permanent: true }); }
+    else { setDelMsg({ title: 'MOVE TO TRASH?', permanent: false }); }
+    setDelPhase('confirm');
+  };
   const confirmDelete = async () => {
     const keys = Array.from(selectedIds);
     setHolding(false);
@@ -733,7 +812,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     setSelectedIds(new Set());
     setDelPhase('deleted');
     if (delTimer.current) clearTimeout(delTimer.current);
-    delTimer.current = setTimeout(() => { setDelPhase('none'); setSelectMode(false); }, 2500);
+    delTimer.current = setTimeout(() => { setDelPhase('none'); setSelectMode(false); setViewerOpen(false); }, 2500);
   };
   const cancelDelete = () => { setHolding(false); setDelPhase('none'); };
   const undoTrash = () => {
@@ -743,7 +822,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     setDelMsg((m) => ({ ...m, title: 'RESTORED', sub: undefined }));
     setDelPhase('restored');
     if (delTimer.current) clearTimeout(delTimer.current);
-    delTimer.current = setTimeout(() => { setDelPhase('none'); setSelectMode(false); }, 2000);
+    delTimer.current = setTimeout(() => { setDelPhase('none'); setSelectMode(false); setViewerOpen(false); }, 2000);
   };
 
   // dwupoziomowe menu jak pasek EDIT: pod-pasek (podopcje) NA GÓRZE, pasek główny [SELECT · ACTION] NA DOLE.
@@ -785,6 +864,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     if (viewerOpen) { if (!editor.goBack()) setViewerOpen(false); return true; }
     if (inside) { setOpenFolder(null); return true; }
     if (feedMode) { setFeedMode(false); setSelected(0); return true; }
+    if (momentsMode) { setMomentsMode(false); setSelected(0); return true; }
     return false;
   };
 
@@ -850,7 +930,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
         : { label: 'EXIT', supporting: '[HOLD]', variant: 'risk', onHoldComplete: () => onExitApp?.(), holdMs: 1500 },
     ],
     metal: [
-      menuOpen ? { type: 'label', upper: '' } : { type: 'label', upper: feedMode ? 'FOLDERS' : 'FEED', onPress: toggleFeed },
+      menuOpen ? { type: 'label', upper: '' } : { type: 'label', upper: nextViewLabel, onPress: toggleFeed },
       { type: 'label', upper: menuOpen ? 'CLOSE\nMENU' : 'MENU', variant: menuOpen ? 'primary' : undefined, onPress: toggleMenu },
     ],
     joystick: {
@@ -860,10 +940,10 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
 
       // feed: góra/dół = równe przewijanie (FeedGrid.nudge), lewo/prawo = kafel obok (feedMoveH);
       // folder = równa siatka (move ±cols/±1); podgląd = prev/next
-      onUp: () => { if (menuOpen) menuMove(-1); else if (viewerOpen) return; else if (!feedMode) { bumpNavHide(); move(-cols); } },
-      onDown: () => { if (menuOpen) menuMove(1); else if (viewerOpen) return; else if (!feedMode) { bumpNavHide(); move(cols); } },
-      onLeft: () => { if (menuOpen) return; if (feedMode && !viewerOpen) feedMoveH(-1); else move(-1); },   // podgląd: poprzednie zdjęcie
-      onRight: () => { if (menuOpen) return; if (feedMode && !viewerOpen) feedMoveH(1); else move(1); },    // podgląd: następne zdjęcie
+      onUp: () => { if (menuOpen) menuMove(-1); else if (viewerOpen) return; else if (momentsMode) { bumpNavHide(); momentsRef.current?.moveV(-1); } else if (!feedMode) { bumpNavHide(); move(-cols); } },
+      onDown: () => { if (menuOpen) menuMove(1); else if (viewerOpen) return; else if (momentsMode) { bumpNavHide(); momentsRef.current?.moveV(1); } else if (!feedMode) { bumpNavHide(); move(cols); } },
+      onLeft: () => { if (menuOpen) return; if (feedMode && !viewerOpen) feedMoveH(-1); else if (momentsMode && !viewerOpen) momentsRef.current?.moveH(-1); else move(-1); },   // podgląd: poprzednie zdjęcie
+      onRight: () => { if (menuOpen) return; if (feedMode && !viewerOpen) feedMoveH(1); else if (momentsMode && !viewerOpen) momentsRef.current?.moveH(1); else move(1); },    // podgląd: następne zdjęcie
       // feed: PŁYNNY przesuw sterowany wychyleniem (nie serią kroków) — patrz FeedGrid.navStart/navEnd.
       // Pion obsługuje wyłącznie ta ścieżka, więc onUp/onDown w feedzie celowo nic nie robią.
       // Pojedyncze pchnięcie = przeskok kursora na sąsiedni kafel (natychmiast). Jeśli wychylenie
@@ -962,12 +1042,12 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
 
   const content = (
     <>
-      <ScreenTopBar mode={mode} label={feedMode ? 'FEED' : undefined} onCycleMode={onCycleMode} />
+      <ScreenTopBar mode={mode} label={feedMode ? 'FEED' : momentsMode ? 'MOMENTS' : 'FOLDERS'} onCycleMode={onCycleMode} />
 
-      {/* content_area: przy otwartym menu przygaszona (menu zostaje pełne, poza tym wrapperem). Przygaszamy CIEMNĄ
-          ZASŁONĄ na wierzchu (a NIE opacity na wrapperze) — group-opacity na wspólnym rodzicu siatki i filtra psuła
-          kompozycję mixBlendMode (filtr immersive/retro znikał przy otwartym menu). */}
-      <View style={{ flex: 1, alignSelf: 'stretch', gap: 12 }}>
+      {/* content_area: przy otwartym menu przygaszona do 25% widoczności (opacity, wg życzenia usera).
+          UWAGA: group-opacity na wspólnym rodzicu siatki i filtra znosi kompozycję mixBlendMode, więc filtr
+          immersive/retro przy otwartym menu zanika — akceptowalne, bo treść jest wtedy i tak przygaszona. */}
+      <View style={{ flex: 1, alignSelf: 'stretch', gap: 12, opacity: menuOpen ? 0.25 : 1 }}>
 
       {/* breadcrumb tylko we wnętrzu folderu; tap = wyjście do listy folderów */}
       {!feedMode && inside && folders[openFolder!] ? (
@@ -989,7 +1069,26 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
           setContentW((prev) => (Math.abs(prev - w) < 1 ? prev : w)); // ignoruj sub-pikselowe drgania (bez pętli re-renderów)
         }}
       >
-        {feedMode ? (
+        {momentsMode ? (
+          contentW > 0 ? (
+            <MomentsGrid
+              ref={momentsRef}
+              data={momentsView}
+              timeOf={(i) => (momentsView[i] as any)?.creationTime}
+              placeOf={(i) => { const t = (momentsView[i] as any)?.creationTime; if (t == null) return undefined; const d = new Date(t); const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; return placeByDay[k] || undefined; }}
+              width={contentW}
+              selected={selected}
+              hideCursor={cursorHidden}
+              images={diag.images}
+              onOpen={selectMode ? toggleSelectAt : openViewerAt}
+              onSelectAt={(i) => setSelected(i)}
+              onScrollActive={setCursorHidden}
+              selectMode={selectMode}
+              checkedAt={(i) => { const s = momentsView[i]; return s != null && selectedIds.has(photoKey(s)); }}
+              onLongPressAt={enterSelect}
+            />
+          ) : null
+        ) : feedMode ? (
           contentW > 0 ? (
             <FeedGrid
               ref={feedRef}
@@ -1034,7 +1133,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
                 : inside
                   ? () => { setSelected(index); setViewerOpen(true); }
                   : () => setOpenFolder(index);
-              const onLong = isTrashTile ? undefined : () => enterSelect(index);
+              const onLong = isTrashTile || isFolderView ? undefined : () => enterSelect(index);
               return (
                 <View style={{ width: itemWidth, padding: gap / 2 }}>
                   {inside ? (
@@ -1093,7 +1192,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
       {menuOpen && !viewerOpen ? (
         <>
           <MenuScrim />
-          <GalleryMenu index={menuIndex} onPick={pickMenu} items={menuLabels} leftHanded={leftHanded} />
+          <GalleryMenu index={menuIndex} onPick={pickMenu} items={menuLabels} leftHanded={leftHanded} riskLabels={MENU_RISK} />
         </>
       ) : null}
 
@@ -1127,12 +1226,15 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // dziecko, więc `editor.content` zostaje na swojej pozycji i nie jest przemontowywany.
   const finalContent = viewerOpen ? (
     <>
-      {editor.content}
+      <View style={{ flex: 1, alignSelf: 'stretch', opacity: menuOpen ? 0.25 : 1 }}>{editor.content}</View>
       {menuOpen ? (
         <>
           <MenuScrim />
-          <GalleryMenu index={menuIndex} onPick={pickMenu} items={menuLabels} leftHanded={leftHanded} />
+          <GalleryMenu index={menuIndex} onPick={pickMenu} items={menuLabels} leftHanded={leftHanded} riskLabels={MENU_RISK} />
         </>
+      ) : null}
+      {delPhase !== 'none' ? (
+        <OverlayPanel tone={delPhase === 'confirm' ? 'red' : 'phosphor'} title={delMsg.title} sub={delPhase === 'confirm' ? delMsg.sub : undefined} />
       ) : null}
     </>
   ) : content;

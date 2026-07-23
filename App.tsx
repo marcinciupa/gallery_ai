@@ -21,7 +21,7 @@ import { useGalleryScreen, DESIGN, MOCK_FOLDERS, EMPTY_FOLDERS } from './src/scr
 import { useViewerScreen } from './src/screens/ViewerScreen';
 import { ImmersiveViewer } from './src/screens/ImmersiveViewer';
 import { useMedia } from './src/hooks/useMedia';
-import { useLibraryFilter } from './src/hooks/useLibraryFilter';
+import { useLibraryFilter, momentsFolderIds } from './src/hooks/useLibraryFilter';
 import { Mode, nextMode } from './src/screens/ScreenChrome';
 import { PerfHud, renderTicker } from './src/components/PerfHud';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -60,15 +60,21 @@ function AppInner() {
   const media = useMedia();
   const allFolders = DESIGN ? MOCK_FOLDERS : (media.folders ?? EMPTY_FOLDERS);
   const lib = useLibraryFilter();
+  // Zasiej MOMENTS folderami aparatu, gdy foldery są już znane (raz — potem użytkownik zarządza ręcznie).
+  useEffect(() => {
+    if (allFolders.length) lib.seedMoments(momentsFolderIds(allFolders as any[], []));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allFolders]);
 
   const settings = useSettingsScreen({
     mode, onCycleMode: cycleMode, onBack: () => setMode('GALLERY'),
     folders: allFolders, included: lib.included, excluded: lib.excluded, hidden: lib.hidden,
     onToggleIncluded: lib.toggleIncluded, onToggleExcluded: lib.toggleExcluded, onToggleHidden: lib.toggleHidden,
+    moments: lib.moments, onToggleMoments: lib.toggleMoments,
   });
   const gallery = useGalleryScreen({
     mode, onCycleMode: cycleMode, onOpenSettings: () => setMode('SETTINGS'), onExitApp: () => BackHandler.exitApp(),
-    media, allFolders, included: lib.included, excluded: lib.excluded, hidden: lib.hidden,
+    media, allFolders, included: lib.included, excluded: lib.excluded, hidden: lib.hidden, moments: lib.moments,
     displayMode: settings.screenMode, diag: settings.diag, leftHanded: settings.leftHanded,
     promptBooster: settings.promptBooster,
   });

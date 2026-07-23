@@ -392,13 +392,16 @@ export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function 
     const tileH = p.k * cell + (p.k - 1) * gap;
     const first = !didScroll.current;
     didScroll.current = true;
+    // WYPRZEDZENIE: trzymaj zawsze JEDEN wiersz zapasu między kursorem a krawędzią (jak w FOLDERS),
+    // zamiast dosuwać dopiero gdy kafel wyjedzie za kadr. `lead` = wysokość wiersza.
+    const lead = step;
     let target: number | null = null;
     if (first) {
       target = Math.max(0, tileTop + tileH / 2 - viewH / 2); // przywrócenie pozycji → wyśrodkuj
-    } else if (tileTop < curY.current) {
-      target = tileTop - inset;                              // wyjechał górą → dosuń w górę
-    } else if (tileTop + tileH > curY.current + viewH) {
-      target = tileTop + tileH - viewH + inset;              // wyjechał dołem → dosuń w dół
+    } else if (tileTop - lead < curY.current) {
+      target = tileTop - inset - lead;                       // zbliża się do góry → dosuń z zapasem wiersza
+    } else if (tileTop + tileH + lead > curY.current + viewH) {
+      target = tileTop + tileH - viewH + inset + lead;       // zbliża się do dołu → dosuń z zapasem wiersza
     }
     if (target == null) return; // mieści się w kadrze → NIE ruszaj widoku
     scrollToY(target, !first);  // przywrócenie bez animacji, ruch kursorem z animacją

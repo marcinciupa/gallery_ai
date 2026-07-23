@@ -38,7 +38,13 @@
           "resizeMode": "contain"
         }
       ],
-      "expo-image"
+      "expo-image",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Gallery AI używa lokalizacji tylko do nazwania miejsc zdjęć w widoku MOMENTS."
+        }
+      ]
     ],
     "extra": {
       "eas": {

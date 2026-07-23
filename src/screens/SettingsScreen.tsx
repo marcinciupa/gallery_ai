@@ -146,6 +146,7 @@ const INITIAL_SECTIONS: SectionData[] = [
       { label: 'INCLUDED FOLDERS', options: ['OPEN'], value: 0, action: true },
       { label: 'EXCLUDED FOLDERS', options: ['OPEN'], value: 0, action: true },
       { label: 'HIDDEN FOLDERS', options: ['OPEN'], value: 0, action: true },
+      { label: 'MOMENTS FOLDERS', options: ['OPEN'], value: 0, action: true },
     ],
   },
   {
@@ -214,6 +215,8 @@ export function useSettingsScreen({
   onToggleIncluded,
   onToggleExcluded,
   onToggleHidden,
+  moments = [],
+  onToggleMoments,
 }: {
   mode?: Mode;
   onCycleMode?: () => void;
@@ -225,10 +228,12 @@ export function useSettingsScreen({
   onToggleIncluded?: (id: string) => void;
   onToggleExcluded?: (id: string) => void;
   onToggleHidden?: (id: string) => void;
+  moments?: string[];
+  onToggleMoments?: (id: string) => void;
 } = {}) {
   const [sections, setSections] = useState<SectionData[]>(INITIAL_SECTIONS);
   const [selected, setSelected] = useState(0);
-  const [view, setView] = useState<'MAIN' | 'INCLUDED' | 'EXCLUDED' | 'HIDDEN'>('MAIN'); // sub-widoki edytora filtra biblioteki
+  const [view, setView] = useState<'MAIN' | 'INCLUDED' | 'EXCLUDED' | 'HIDDEN' | 'MOMENTS'>('MAIN'); // sub-widoki edytora filtra biblioteki
   const [libSel, setLibSel] = useState(0); // kursor w liście folderów sub-widoku
   const [showDiag, setShowDiag] = useState(false); // sekcja DIAGNOSTICS ukryta; odkrywa 10× tapnięcie w stopkę
   const hydrated = useRef(false);
@@ -333,14 +338,14 @@ export function useSettingsScreen({
       }));
     });
   // Edytor filtra biblioteki (INCLUDED/EXCLUDED) — działa na REALnych folderach (prop `folders`).
-  const openSub = (v: 'INCLUDED' | 'EXCLUDED' | 'HIDDEN') => { setLibSel(0); setView(v); };
+  const openSub = (v: 'INCLUDED' | 'EXCLUDED' | 'HIDDEN' | 'MOMENTS') => { setLibSel(0); setView(v); };
   const goBack = () => { if (view !== 'MAIN') { setView('MAIN'); return true; } return false; };
   const isInc = view === 'INCLUDED';
-  const subSet = view === 'INCLUDED' ? included : view === 'HIDDEN' ? hidden : excluded;   // aktualny zbiór (id folderów)
-  const subToggle = view === 'INCLUDED' ? onToggleIncluded : view === 'HIDDEN' ? onToggleHidden : onToggleExcluded;
+  const subSet = view === 'INCLUDED' ? included : view === 'HIDDEN' ? hidden : view === 'MOMENTS' ? moments : excluded;   // aktualny zbiór (id folderów)
+  const subToggle = view === 'INCLUDED' ? onToggleIncluded : view === 'HIDDEN' ? onToggleHidden : view === 'MOMENTS' ? onToggleMoments : onToggleExcluded;
   const libMove = (d: -1 | 1) => setLibSel((i) => Math.max(0, Math.min(folders.length - 1, i + d)));
   const libToggle = (idx = libSel) => { const f = folders[idx]; if (f) subToggle?.(f.id); };
-  const subFor = (label?: string): 'INCLUDED' | 'EXCLUDED' | 'HIDDEN' => (label === 'INCLUDED FOLDERS' ? 'INCLUDED' : label === 'HIDDEN FOLDERS' ? 'HIDDEN' : 'EXCLUDED');
+  const subFor = (label?: string): 'INCLUDED' | 'EXCLUDED' | 'HIDDEN' | 'MOMENTS' => (label === 'INCLUDED FOLDERS' ? 'INCLUDED' : label === 'HIDDEN FOLDERS' ? 'HIDDEN' : label === 'MOMENTS FOLDERS' ? 'MOMENTS' : 'EXCLUDED');
 
   const changeBy = (dir: -1 | 1) => {
     const it = flatItems[selected];
@@ -443,6 +448,9 @@ export function useSettingsScreen({
           )}
           {isInc && included.length === 0 ? (
             <Text style={{ fontFamily: font.monoCaption.family, fontSize: font.monoCaption.size, color: screen.olive.inactive, textAlign: 'center' }}>EMPTY = ALL FOLDERS SHOWN</Text>
+          ) : null}
+          {view === 'MOMENTS' && moments.length === 0 ? (
+            <Text style={{ fontFamily: font.monoCaption.family, fontSize: font.monoCaption.size, color: screen.olive.inactive, textAlign: 'center' }}>EMPTY = CAMERA FOLDERS</Text>
           ) : null}
         </View>
       </ScrollView>

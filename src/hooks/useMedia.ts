@@ -19,12 +19,12 @@ export type MediaStatus = 'idle' | 'loading' | 'denied' | 'ready' | 'error' | 'u
 // ⚠️ PERF: wymiary trzymamy pod NIE-standardowymi kluczami mediaWidth/mediaHeight, a NIE width/height — bo width/height
 // to rozpoznawane pola ImageSourcePropType i expo-image dekodowałoby wtedy KAŻDĄ miniaturę w pełnej rozdzielczości
 // oryginału → zapaść pamięci/FPS. mediaWidth/mediaHeight/filename są ignorowane przez expo-image (jak raw/ai).
-export type PhotoSource = { uri: string; raw?: boolean; ai?: boolean; mediaWidth?: number | null; mediaHeight?: number | null; filename?: string | null; creationTime?: number | null };
+export type PhotoSource = { uri: string; raw?: boolean; ai?: boolean; mediaWidth?: number | null; mediaHeight?: number | null; filename?: string | null; creationTime?: number | null; albumId?: string };
 
 // Formaty RAW (po rozszerzeniu nazwy pliku). Detekcja best-effort — filename z metadanych, gdy dostępny.
 const RAW_RE = /\.(dng|arw|cr[23w]|nef|nrw|orf|raf|rw2|pef|sr[2fw]|raw|x3f|3fr|fff|iiq|kdc|mos|mrw|dcr|k25)$/i;
 const isRaw = (name?: string | null) => !!name && RAW_RE.test(name);
-const flag = (m: any, tags: Set<string>): PhotoSource => ({ uri: m.id, raw: isRaw(m.filename), ai: tags.has(m.id), mediaWidth: m.width ?? null, mediaHeight: m.height ?? null, filename: m.filename ?? null });
+const flag = (m: any, tags: Set<string>): PhotoSource => ({ uri: m.id, raw: isRaw(m.filename), ai: tags.has(m.id), mediaWidth: m.width ?? null, mediaHeight: m.height ?? null, filename: m.filename ?? null, creationTime: m.creationTime ?? null });
 // count opcjonalny — świadomie NIE liczymy zdjęć na starcie (skan wszystkich metadanych = lawina GC = jank).
 export type MediaFolder = { id: string; name: string; cover?: ImageSourcePropType; count?: number };
 
@@ -130,5 +130,26 @@ export function useMedia() {
     return meta.map((m: any) => flag(m, tags) as ImageSourcePropType);
   };
 
-  return { folders, status, error, loadPhotos, deleteItems, reload };
+  // GPS + nazwa miejsca dla POJEDYNCZEGO assetu (id = PhotoSource.uri). DROGIE: getAssetInfoAsync
+  // kopiuje plik do cache — wołać RZADKO (w MOMENTS tylko dla 1 reprezentanta na grupę-dzień, nie
+  // per zdjęcie). reverseGeocode wymaga uprawnienia lokalizacji (Android); brak → zwracamy null.
+  const placeOfAsset = async (assetId: string): Promise<string | null> => {
+    if (Platform.OS === 'web') return null;
+    try {
+      // WAŻNE: getAssetInfoAsync z GŁÓWNEGO importu RZUCA w runtime (deprecated, wygaszone) — działa
+      // tylko wersja z `expo-media-library/legacy`. Tam AssetInfo.location ma GPS.
+      const Legacy: any = await import('expo-media-library/legacy');
+      const info = await Legacy.getAssetInfoAsync(assetId);
+      const loc = info?.location;
+      if (!loc || loc.latitude == null || loc.longitude == null) return null;
+      const Loc: any = await import('expo-location');
+      if (!(await Loc.getForegroundPermissionsAsync()).granted) {
+        if (!(await Loc.requestForegroundPermissionsAsync()).granted) return null;
+      }
+      const res = await Loc.reverseGeocodeAsync({ latitude: loc.latitude, longitude: loc.longitude });
+      const a = res?.[0];
+      return a ? (a.city || a.subregion || a.region || a.country || null) : null;
+    } catch { return null; }
+  };
+  return { folders, status, error, loadPhotos, deleteItems, reload, placeOfAsset };
 }
