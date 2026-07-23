@@ -77,9 +77,10 @@ export type ImageInfo = {
   aiPrompt: string | null;
   aiUpscale: number | null;
   prov: Provenance | null;
+  place?: string | null;
 };
 
-export function InfoPanel({ dims, fileSize, format, aiTools, aiPrompt, aiUpscale, prov }: { dims: { w: number; h: number } | null; fileSize: string | null; format?: string | null; aiTools: string[]; aiPrompt: string | null; aiUpscale: number | null; prov: Provenance | null }) {
+export function InfoPanel({ dims, fileSize, format, aiTools, aiPrompt, aiUpscale, prov, place }: { dims: { w: number; h: number } | null; fileSize: string | null; format?: string | null; aiTools: string[]; aiPrompt: string | null; aiUpscale: number | null; prov: Provenance | null; place?: string | null }) {
   const mp = dims ? Math.ceil((dims.w * dims.h) / 1e5) / 10 : null; // megapiksele; zaokrąglenie W GÓRĘ do 0.1 (stabilne, bez migania)
   // SOURCE/C2PA = odczyt ze standardów (IPTC digitalSourceType + obecność Content Credentials) z oryginału.
   // FORMAT = rzeczywisty format z rozszerzenia (RAW → np. „.dng (RAW)"). AI EDITED = ingerencja AI (metadane lub edycja).
@@ -101,6 +102,7 @@ export function InfoPanel({ dims, fileSize, format, aiTools, aiPrompt, aiUpscale
       {edited ? <View style={{ flexDirection: 'row', alignSelf: 'stretch' }}><InfoField cap="AI MODEL" val={AI_MODEL} grow /></View> : null}
       {edited ? <View style={{ flexDirection: 'row', alignSelf: 'stretch' }}><InfoField cap="AI TOOLS" val={aiTools.join(', ')} grow /></View> : null}
       {aiPrompt ? <View style={{ flexDirection: 'row', alignSelf: 'stretch' }}><InfoField cap="AI PROMPT" val={`"${aiPrompt}"`} grow /></View> : null}
+      {place ? <View style={{ flexDirection: 'row', alignSelf: 'stretch' }}><InfoField cap="LOCATION" val={place} grow /></View> : null}
     </View>
   );
 }
@@ -216,13 +218,22 @@ function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims, onI
           />
         </Animated.View>
       ) : null}
+      {/* badge AI / RAW — na zewnętrznym View (nie skaluje się z zoomem obrazu) */}
+      {(source as any)?.ai || (source as any)?.raw ? (
+        <View pointerEvents="none" style={{ position: 'absolute', top: 8, right: 10, flexDirection: 'row', gap: 8 }}>
+          {(source as any)?.ai ? <Text style={viewerBadge}>AI</Text> : null}
+          {(source as any)?.raw ? <Text style={viewerBadge}>RAW</Text> : null}
+        </View>
+      ) : null}
     </View>
   );
 }
+const viewerBadge = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: screen.olive.primary, textShadowColor: color.dark21, textShadowRadius: 2, textShadowOffset: { width: 0, height: 0 } } as const;
 
 export function useImageEditor({
   source,
   open,
+  place,
   onExit,
   onPrev,
   onNext,
@@ -235,6 +246,7 @@ export function useImageEditor({
 }: {
   source?: ImageSourcePropType;
   open: boolean;         // podgląd otwarty (galeria: viewerOpen)
+  place?: string | null; // nazwa miejsca (GPS→reverseGeocode), rozwiązywana w GalleryScreen
   onExit: () => void;    // zamknij podgląd → powrót do siatki
   onPrev: () => void;    // poprzednie zdjęcie
   onNext: () => void;    // następne zdjęcie
@@ -674,7 +686,7 @@ export function useImageEditor({
 
         {/* INFO — parametry obrazka + ślad AI (Figma _AI 426:7051). Nad menu, gdy oba otwarte. Swipe-up/INFO. */}
         {view === 'viewer' && infoOpen ? (
-          <InfoPanel dims={dims} fileSize={fileSize} format={formatLabel((source as any)?.filename, !!(source as any)?.raw)} aiTools={aiTools} aiPrompt={aiPrompt} aiUpscale={aiUpscale} prov={prov} />
+          <InfoPanel dims={dims} fileSize={fileSize} format={formatLabel((source as any)?.filename, !!(source as any)?.raw)} aiTools={aiTools} aiPrompt={aiPrompt} aiUpscale={aiUpscale} prov={prov} place={place} />
         ) : null}
 
         {/* MENU EDIT — dwupoziomowy pasek pod obrazem (Figma _AI), tylko w widoku VIEWER.
@@ -720,6 +732,6 @@ export function useImageEditor({
     </>
   );
 
-  const info: ImageInfo = { open: infoOpen, setOpen: setInfoOpen, dims, fileSize, format: formatLabel((source as any)?.filename, !!(source as any)?.raw), filename: (source as any)?.filename ?? null, aiTools, aiPrompt, aiUpscale, prov };
+  const info: ImageInfo = { open: infoOpen, setOpen: setInfoOpen, dims, fileSize, format: formatLabel((source as any)?.filename, !!(source as any)?.raw), filename: (source as any)?.filename ?? null, aiTools, aiPrompt, aiUpscale, prov, place };
   return { content, keyboard, goBack, typing, info };
 }

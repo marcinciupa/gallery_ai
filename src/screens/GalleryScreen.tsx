@@ -698,9 +698,22 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // EDYTOR — pełnoekranowy podgląd + edycja (Figma „fullscreen_view/edit"). Aktywny, gdy `viewerOpen`;
   // przejmuje treść ekranu i klawiaturę. Źródło = zaznaczone zdjęcie (feed lub wnętrze folderu).
   const currentSource = (momentsMode ? momentsView : feedMode ? feedView : photosView)[selected];
+  // Lokalizacja dla panelu INFO w podglądzie — rozwiązywana dla POJEDYNCZEGO bieżącego zdjęcia (tanie).
+  const [viewerPlace, setViewerPlace] = useState<string | null>(null);
+  useEffect(() => {
+    setViewerPlace(null);
+    if (!viewerOpen || !media || DESIGN) return;
+    const id = (currentSource as any)?.uri; if (!id) return;
+    let cancelled = false;
+    media.placeOfAsset(id).then((pl) => { if (!cancelled) setViewerPlace(pl); }).catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewerOpen, currentSource]);
+
   const editor = useImageEditor({
     source: currentSource,
     open: viewerOpen,
+    place: viewerPlace,
     onExit: closeViewer,
     onPrev: () => move(-1),
     onNext: () => move(1),

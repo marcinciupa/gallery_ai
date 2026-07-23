@@ -82,12 +82,20 @@ const MomentTile = memo(function MomentTile({
           ) : null}
         </>
       ) : null}
+      {/* badge AI / RAW (prawy-górny róg) — flagi ze źródła zdjęcia */}
+      {images && source && ((source as any).ai || (source as any).raw) ? (
+        <View pointerEvents="none" style={{ position: 'absolute', top: 6, right: 8, flexDirection: 'row', gap: 6 }}>
+          {(source as any).ai ? <Text style={badgeTxt}>AI</Text> : null}
+          {(source as any).raw ? <Text style={badgeTxt}>RAW</Text> : null}
+        </View>
+      ) : null}
       {check != null ? (
         <View pointerEvents="none" style={{ position: 'absolute', top: 6, left: 6, width: 18, height: 18, borderRadius: 3, borderWidth: 2, borderColor: screen.olive.primary, backgroundColor: check ? color.dark21 : screen.olive.primary }} />
       ) : null}
     </Pressable>
   );
 });
+const badgeTxt = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: screen.olive.primary, textShadowColor: color.dark21, textShadowRadius: 2, textShadowOffset: { width: 0, height: 0 } } as const;
 
 export const MomentsGrid = memo(forwardRef<MomentsGridHandle, MomentsGridProps>(function MomentsGrid({
   data, timeOf, placeOf, width, selected, hideCursor, images = true, onOpen, onSelectAt, onScrollActive, spanOf, onCycleSpan, selectMode, checkedAt, onLongPressAt,
