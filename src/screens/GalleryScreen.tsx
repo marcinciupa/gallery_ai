@@ -11,7 +11,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, Platform, FlatList, LayoutChangeEvent, ImageSourcePropType } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
-import { color, font, screen, textShadow } from '../theme/tokens';
+import { color, font, screen, textShadow, dims } from '../theme/tokens';
 import type { KeyboardConfig } from '../components/chrome/Keyboard';
 import { MenuBar } from '../components/chrome/MenuBar';
 import { ScreenTopBar, Mode, DisplayMode } from './ScreenChrome';
@@ -1226,7 +1226,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // dziecko, więc `editor.content` zostaje na swojej pozycji i nie jest przemontowywany.
   const finalContent = viewerOpen ? (
     <>
-      <View style={{ flex: 1, alignSelf: 'stretch', opacity: menuOpen ? 0.25 : 1 }}>{editor.content}</View>
+      <View style={{ flex: 1, alignSelf: 'stretch', gap: dims.screenGap, opacity: menuOpen ? 0.25 : 1 }}>{editor.content}</View>
       {menuOpen ? (
         <>
           <MenuScrim />
