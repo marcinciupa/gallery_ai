@@ -9,10 +9,8 @@
 import { forwardRef, RefObject, useImperativeHandle, useRef, useState } from 'react';
 import { View, Text, Pressable, TextInput, ImageSourcePropType } from 'react-native';
 import { color, font, screen, textShadow } from '../theme/tokens';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaskCanvas, MaskCanvasHandle } from './MaskCanvas';
 import { MenuBar } from '../components/chrome/MenuBar';
-import { useKeyboardHeight } from '../hooks/useKeyboardHeight';
 
 const phosphorGlow = {
   textShadowColor: textShadow.phosphor.color,
@@ -54,8 +52,8 @@ export const AiStage = forwardRef<AiStageHandle, {
   useImperativeHandle(ref, () => ({
     navLeft: () => { if (levelRef.current === 'second') maskRef.current?.navValue(-1); else setFirst((i) => Math.max(0, i - 1)); },
     navRight: () => { if (levelRef.current === 'second') maskRef.current?.navValue(1); else setFirst((i) => Math.min(BRUSH_TABS.length - 1, i + 1)); },
-    navUp: () => {}, // w górę NIE odsłania poziomu 2 — do tego służy zatwierdzenie (press/tap)
-    navDown: () => {}, // zwijanie poziomu 2 TYLKO przez BACK — pion joysticka tego nie robi (mylące)
+    navUp: () => setLevel('second'),   // wejście na poziom 2
+    navDown: () => setLevel('first'),  // cofnięcie na poziom 1
     press: () => { if (levelRef.current === 'first') setLevel('second'); },
     collapse: () => { if (levelRef.current === 'second') { setLevel('first'); return true; } return false; },
     undo: () => maskRef.current?.undo(),
@@ -67,14 +65,14 @@ export const AiStage = forwardRef<AiStageHandle, {
   // wynikał z samej zakładki, więc całe drzewko było widoczne od razu.
   const panel = typing || level !== 'second' ? null : first === 0 ? 'mode' : 'size';
 
-  // Podczas pisania PODNIEŚ zawartość (z polem promptu na dole) o wysokość klawiatury — inaczej na części
-  // urządzeń (edge-to-edge, gdzie adjustResize zawodzi) systemowa klawiatura zasłania input. Odejmujemy dolny
-  // inset (navbar już wliczony w padding roota App), by prompt siedział tuż nad klawiaturą, bez zbędnej luki.
-  const kb = useKeyboardHeight();
-  const insets = useSafeAreaInsets();
-  const liftBottom = typing ? Math.max(0, kb - insets.bottom) : 0;
+  // Przy pisaniu DeviceShell REZERWUJE już wysokość klawiatury (hideControls → dolna sekcja = spacer kbH),
+  // więc treść jest podniesiona nad klawiaturę. Tu dodajemy WYŁĄCZNIE 16 odstępu prompt ↔ klawiatura —
+  // liczenie klawiatury po raz drugi kurczyło obraz o podwójną wysokość klawiatury.
+  const liftBottom = typing ? 16 : 0;
 
   return (
+    // Obraz (MaskCanvas flex:1) wypełnia resztę między statusbarem a inputem; input siedzi 16 nad
+    // klawiaturą (paddingBottom = lift + 16). gap 8 = odstęp obraz ↔ prompt (jak dotąd).
     <View style={{ flex: 1, alignSelf: 'stretch', gap: 8, paddingBottom: liftBottom }}>
       {/* obraz + maska (rozmiar/tryb pędzla). Podczas pisania: pędzel wyłączony, pasek zakładek ukryty. */}
       <MaskCanvas

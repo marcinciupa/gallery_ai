@@ -187,6 +187,7 @@ function AppInner() {
           theme={settings.theme}
           motion={false}
           keyboard={shellKeyboard}
+          keyIcons={settings.keyIcons}
           hideControls={editorTyping}
           // pinch na OBUDOWIE → device/fullscreen
           onPinch={(dir) => settings.setFullscreen(dir === 'out')}

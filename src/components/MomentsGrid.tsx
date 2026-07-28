@@ -174,6 +174,10 @@ export const MomentsGrid = memo(forwardRef<MomentsGridHandle, MomentsGridProps>(
   // Po zatrzymaniu swipe kursor ląduje na PIERWSZYM OD LEWEJ (kol 0) kaflu wiersza w pionowym ŚRODKU
   // ekranu — widok jest wyrównany do lewej, więc lewa kolumna jest naturalnym miejscem kursora.
   const settle = () => {
+    // Tylko po REALNYM swipe palcem. Programowy scroll-into-view (po ruchu joystickiem) też odpala
+    // onMomentumScrollEnd na Androidzie — bez tego guarda settle przenosił kursor na środek, nadpisując
+    // wybór joysticka (userScrolling jest true wyłącznie po onScrollBeginDrag = dotyk użytkownika).
+    if (!userScrolling.current) return;
     userScrolling.current = false;
     onScrollActive?.(false);
     if (!onSelectAt || viewH <= 0) return;

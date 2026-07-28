@@ -101,10 +101,17 @@ pliki przez kopię, nie referencje.
 
 **Wyjątek: wspólny branding/design.** Apki są bliźniacze i dzielą jeden system wizualny, więc zmiany
 w assetach (ikony, splash, adaptive icon) i w tokenach designu wolno robić w obu naraz — ale tylko na
-wyraźną prośbę użytkownika i zawsze symetrycznie (co w gallery, to i w rec_ai). Ustalona 2026-07-21
-konwencja ikon, identyczna w obu: `icon.png` = `android-icon-foreground.png` = `splash-icon.png` =
-pełnospadowy kafel 512×512 z Figmy (tło `#1A1A1A`, matryca, vignette); `android-icon-monochrome.png`
-= sam glif z alfą (Android tintuje, liczy się kształt); brak `backgroundImage`;
-`adaptiveIcon.backgroundColor` = `#1A1A1A`; splash `backgroundColor` = `#1A1A1A` (równe tłu kafla, bez
-szwu) i `imageWidth: 128` (128 dp × 4 = 512 px → skala 1:1, bez mory na ditherze matrycy).
-Figma renderuje maks `pngScale: 4`, stąd 512 px.
+wyraźną prośbę użytkownika i zawsze symetrycznie (co w gallery, to i w rec_ai).
+
+**Aktualny zestaw ikon (rebrand „+" 2026-07-24, Figma section `gallery_plus_icons` #504:29803 /
+`rec_plus_icons` #504:29802).** Nazwane frame'y w Figmie → assety (identyczne mapowanie w obu apkach):
+- `*_icon` (128, kafel: tło `#1A1A1A` + matryca + circular vignette) → `icon.png` **=** `android-icon-foreground.png` (render 512).
+- `*_splash_icon` (128, GLIF na PRZEZROCZYSTYM tle — nie kafel!) → `splash-icon.png` **=** `android-icon-monochrome.png`
+  (render 512; monochrome bierze sam kształt z alfy, Android tintuje).
+- `*_favicon` (96) → `favicon.png` (render 384).
+- `*_icon_google_play` (512, kafel) → `store_assets/app_icon_512.png` (scale 1) + `app_icon_1024.png` (scale 2).
+- `*_icon_variant` (zielony/czerwony kafel) — alternatywa, NIE używana w apkach.
+
+Stałe: brak `backgroundImage`; `adaptiveIcon.backgroundColor` = `#1A1A1A`; splash `backgroundColor` =
+`#1A1A1A` i `imageWidth: 128`. Figma renderuje maks `pngScale: 4`, stąd 512 px z frame'a 128.
+(Poprzednia konwencja 2026-07-21 miała splash = pełny kafel; nowy zestaw zmienił splash i monochrome na glif.)

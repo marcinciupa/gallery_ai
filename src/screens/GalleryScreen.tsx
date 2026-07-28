@@ -278,28 +278,28 @@ function OverlayPanel({ tone, title, sub }: { tone: 'red' | 'phosphor'; title: s
   const bg = tone === 'phosphor' ? screen.olive.primary : color.recordRed;
   const sh = tone === 'phosphor' ? 'rgba(226,255,228,0.25)' : 'rgba(255,76,76,0.25)';
   return (
-    // PASMO wyśrodkowane w treści, NIE prostokąt do dołu ekranu (Figma 138:2626) — nad i pod panelem
-    // widać dalszą część zawartości. Wcześniej panel wypełniał wszystko od nagłówka w dół.
-    <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center' }}>
-      <View
-        style={
-          {
-            alignSelf: 'stretch',
-            backgroundColor: bg,
-            alignItems: 'center',
-            justifyContent: 'center',
-            paddingVertical: 64, // duży zapas pionowy — w projekcie tekst pływa w środku pasma
-            paddingHorizontal: 24,
-            gap: 8,
-            borderRadius: 4,
-            boxShadow: `0px 0px 8px 0px ${sh}`,
-          } as any
-        }
-      >
-        {/* CIEMNY tekst na pełnym tle w kolorze akcentu — kontrast niezależny od tego, co pod spodem */}
-        <Text style={{ fontFamily: font.timer.family, fontSize: 24, lineHeight: 30, color: color.dark21, textAlign: 'center' }}>{title}</Text>
-        {sub ? <Text style={{ fontFamily: font.monoBody.family, fontSize: 12, color: color.dark21, textAlign: 'center' }}>{sub}</Text> : null}
-      </View>
+    // Panel wypełniający treść od `top:48` (pod paskiem statusu ekranu) do dołu — 1:1 z rec_ai
+    // (OverlayPanel, Figma 478:17683). CIEMNY tekst na pełnym tle w kolorze akcentu = maksymalny kontrast.
+    <View
+      style={
+        {
+          position: 'absolute',
+          top: 48,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          borderRadius: 4,
+          backgroundColor: bg,
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 24,
+          gap: 8,
+          boxShadow: `0px 0px 8px 0px ${sh}`,
+        } as any
+      }
+    >
+      <Text style={{ fontFamily: font.timer.family, fontSize: 24, lineHeight: 30, color: color.dark21, textAlign: 'center' }}>{title}</Text>
+      {sub ? <Text style={{ fontFamily: font.monoBody.family, fontSize: 12, color: color.dark21, textAlign: 'center' }}>{sub}</Text> : null}
     </View>
   );
 }
@@ -895,9 +895,8 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     if (selFocus === 0) setSelRoot((r) => (r + d + 3) % 3);
     else setSelSub((s) => { const len = subItems.length; return (s + d + len) % len; });
   };
-  // PION NIE PRZEŁĄCZA POZIOMÓW. W dół zwijał wcześniej poziom 2, ale przy jednoczesnym BACK-u okazało się
-  // to mylące (dwa różne gesty do tego samego, a joystick w innych kontekstach nawiguje po treści).
-  // Wejście w poziom 2 = zatwierdzenie (press/tap), wyjście = WYŁĄCZNIE BACK.
+  // PION przełącza poziomy (obok press/tap i BACK): GÓRA wchodzi głębiej, DÓŁ cofa — patrz onUp/onDown.
+  // Wyjątek: gdy sterowanie jest na SIATCE (focus 2), pion nawiguje kafle, a powrót do menu = CONFIRM.
 
   // back: kolejno zamknij MENU → (edytor: menu edycji/pod-widok, a na końcu podgląd) → folder → feed
   const goBack = () => {
@@ -913,7 +912,12 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   };
 
   // komórka = szerokość kolumny; bok kwadratowego kafla = komórka minus przerwa (padding gap/2)
-  const itemWidth = contentW > 0 ? Math.floor(contentW / cols) : 0;
+  // W multiselekcie content_area dostaje fosforową RAMKĘ (Figma 460:2831): fosforowe tło pokazuje się
+  // w odstępach między miniaturami, a ujemny margines rozszerza je NA ZEWNĄTRZ o gap/2 → ramka szerokości
+  // gapu (gap/2 z paddingu kafla + gap/2 z marginesu). Siatka NIE kurczy się (brak reflow przy wejściu).
+  const SEL_FRAME = PHOTO_GAP / 2;
+  const gw = contentW;
+  const itemWidth = gw > 0 ? Math.floor(gw / cols) : 0;
   const imgSize = itemWidth > 0 ? itemWidth - gap : 0;
   const rowHeight = imgSize + gap + (inside ? 0 : 34); // +podpis dla folderów (getItemLayout → pewny scrollToIndex)
 
@@ -967,7 +971,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     screen: menuOpen
       ? [{ label: '' }, { label: '' }]
       : [
-      { label: 'SIZE', onPress: toggleView },
+      { label: 'SIZE', icon: feedMode ? (cols >= 3 ? 'feed3' : 'feed2') : (cols >= 3 ? 'cols3' : 'cols2'), onPress: toggleView },
       // wewnątrz folderu = BACK; w ROOT (gallery view) i feedzie = EXIT (czerwony, przytrzymaj → wyjście z apki)
       canBack
         ? { label: 'BACK', onPress: () => { goBack(); } }
@@ -1028,8 +1032,16 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
       highlighted: true,
       repeat: selFocus === 2, // po oddaniu sterowania siatce przytrzymanie przewija kafle jak zwykle
       // focus 2 = nawigacja po kaflach (jak poza trybem zaznaczania); inaczej ruch po pozycjach menu
-      onUp: () => { if (selFocus === 2) { if (feedMode) feedMoveV(-1); else { bumpNavHide(); move(-cols); } } },
-      onDown: () => { if (selFocus === 2) { if (feedMode) feedMoveV(1); else { bumpNavHide(); move(cols); } } },
+      // Pion: w SIATCE (focus 2) = nawigacja kafli (powrót do menu tylko przez CONFIRM). W menu: GÓRA wchodzi
+      // głębiej (poziom 1 → poziom 2 lub siatka dla SELECT), DÓŁ cofa (poziom 2 → poziom 1).
+      onUp: () => {
+        if (selFocus === 2) { if (feedMode) feedMoveV(-1); else { bumpNavHide(); move(-cols); } }
+        else if (selFocus === 0) { if (selRoot === 1) setSelFocus(2); else if (subItems.length > 0) setSelFocus(1); }
+      },
+      onDown: () => {
+        if (selFocus === 2) { if (feedMode) feedMoveV(1); else { bumpNavHide(); move(cols); } }
+        else if (selFocus === 1) setSelFocus(0);
+      },
       onLeft: () => { if (selFocus === 2) { if (feedMode) feedMoveH(-1); else move(-1); } else selMoveH(-1); },
       onRight: () => { if (selFocus === 2) { if (feedMode) feedMoveH(1); else move(1); } else selMoveH(1); },
       onPress: selPress,
@@ -1113,6 +1125,9 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
           setContentW((prev) => (Math.abs(prev - w) < 1 ? prev : w)); // ignoruj sub-pikselowe drgania (bez pętli re-renderów)
         }}
       >
+        {/* fosforowa RAMKA multiselekcji — za siatką, rozszerzona NA ZEWNĄTRZ o gap/2 (Figma 460:2831).
+            Przez przezroczyste odstępy między miniaturami widać fosfor; nie wpływa na pomiar szerokości. */}
+        {selectMode ? <View pointerEvents="none" style={{ position: 'absolute', top: -SEL_FRAME, left: -SEL_FRAME, right: -SEL_FRAME, bottom: -SEL_FRAME, backgroundColor: screen.olive.primary, borderRadius: 2 }} /> : null}
         {momentsMode ? (
           contentW > 0 ? (
             <MomentsGrid
@@ -1120,7 +1135,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
               data={momentsView}
               timeOf={(i) => (momentsView[i] as any)?.creationTime}
               placeOf={(i) => { const t = (momentsView[i] as any)?.creationTime; if (t == null) return undefined; const d = new Date(t); const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; return placeByDay[k] || undefined; }}
-              width={contentW}
+              width={gw}
               selected={selected}
               hideCursor={cursorHidden}
               images={diag.images}
@@ -1140,7 +1155,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
               ref={feedRef}
               data={feedView}
               cols={cols}
-              width={contentW}
+              width={gw}
               spans={feedSpansByIndex}
               selected={selected}
               hideCursor={cursorHidden}

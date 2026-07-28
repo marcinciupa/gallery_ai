@@ -232,7 +232,7 @@ export const textShadow = {
 /** Wymiary i layout (1:1 z layout_*). */
 export const dims = {
   frame: { width: 390, height: 844 },
-  bodyRadius: { tl: 8, tr: 8, br: 32, bl: 32 },
+  bodyRadius: { tl: 8, tr: 8, br: 8, bl: 8 }, // dół równy górze (rec_ai celowo ma bardziej zaokrąglony dół: br/bl 32)
   statusBarHeight: 40,
   upperMicHeight: 40,
   screenPadding: 16,

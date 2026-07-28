@@ -27,6 +27,14 @@ KEEP="${APK_KEEP:-3}"
 
 VERSION="$(node -p "require('$ROOT/app.json').expo.version")"
 
+# WALIDATOR KONWENCJI WERSJI — żeby dryf nie wyszedł na udział (patrz reguła bump-version-per-feature).
+# versionCode = round(version×10000), kończy się na 0 (funkcja) lub 5 (POŁÓWKA = mniej znacząca zmiana);
+# versionName = versionCode/10000 z obciętym zerem końcowym (3 cyfry normalnie, 4 z „5" dla połówki).
+VCODE="$(node -p "require('$ROOT/app.json').expo.android.versionCode")"
+EXP_NAME="$(node -p "(require('$ROOT/app.json').expo.android.versionCode/10000).toString()")"
+[ "$VERSION" = "$EXP_NAME" ] || { echo "BŁĄD KONWENCJI: version '$VERSION' ≠ versionCode/10000 ('$EXP_NAME'). Ustaw version='$EXP_NAME' albo popraw versionCode." >&2; exit 1; }
+[ $(( VCODE % 5 )) -eq 0 ] || { echo "BŁĄD KONWENCJI: versionCode $VCODE nie kończy się na 0 (funkcja) ani 5 (połówka). Wyrównaj do najbliższego kroku." >&2; exit 1; }
+
 AGE=$(( $(date +%s) - $(stat -c %Y "$APK") ))
 if [ "$AGE" -gt 600 ]; then
   echo "⚠️  UWAGA: APK ma $((AGE / 60)) min. Gradle mógł nie przepakować."
@@ -45,18 +53,34 @@ else
   LISTING="$(ls "$FALLBACK_DIR" 2>/dev/null | grep '^gallery_ai-.*\.apk$' || true)"
 fi
 
+# Konwencja nazwy (ustalenie użytkownika 2026-07-24): sufiks `-t<N>` TYLKO gdy to iteracja testowa tej
+# samej wersji (bez nowego ficzera). Pierwszy build ŚWIEŻO bumpniętej wersji (= z ficzerem, patrz reguła
+# bump-version-per-feature) dostaje nazwę WYDANIOWĄ bez sufiksu. Wykrywamy to automatycznie: jeśli plik
+# wydaniowy tej wersji jeszcze nie istnieje w miejscu docelowym → to ten pierwszy build. `--release`
+# wymusza wydaniową (błąd, gdy istnieje), `--test` wymusza `-t`.
+RELEASE_NAME="gallery_ai-${VERSION}.apk"
+RELEASE_EXISTS=0
+echo "$LISTING" | grep -qx "$RELEASE_NAME" && RELEASE_EXISTS=1
+
 if [ "${1:-}" = "--release" ]; then
-  NAME="gallery_ai-${VERSION}.apk"
-  echo "$LISTING" | grep -qx "$NAME" && { echo "BŁĄD: $NAME już istnieje — bumpnij wersję zamiast nadpisywać." >&2; exit 1; }
+  [ "$RELEASE_EXISTS" = 1 ] && { echo "BŁĄD: $RELEASE_NAME już istnieje — bumpnij wersję zamiast nadpisywać." >&2; exit 1; }
+  NAME="$RELEASE_NAME"
+elif [ "${1:-}" != "--test" ] && [ "$RELEASE_EXISTS" = 0 ]; then
+  # pierwszy build tej (bumpniętej) wersji → nazwa wydaniowa, bez -t
+  NAME="$RELEASE_NAME"
 else
-  # Licznik MONOTONICZNY, trzymany w PLIKU — nie odgadywany wyłącznie z listy plików, bo stare buildy
-  # są kasowane (ręcznie lub przez sprzątanie niżej) i licznik by się cofał, dając dwa różne buildy
-  # o tej samej nazwie (zdarzyło się 2026-07-21).
+  # iteracja testowa TEJ SAMEJ wersji. Licznik `-t<N>` RESETUJE SIĘ przy bumpie — każda wersja numeruje
+  # testy od t1. Plik `.apk-counter` trzyma "VERSION N"; przy zmianie wersji zaczynamy od 0. Dodatkowo
+  # bierzemy max -t widoczny na udziale DLA TEJ wersji (przetrwa utratę licznika; stare buildy bywają
+  # skasowane, więc sam listing bywa niepełny → max(plik, listing)).
   COUNTER="$ROOT/tools/.apk-counter"
-  LAST_FILE=$(cat "$COUNTER" 2>/dev/null || echo 0)
-  LAST_SEEN=$(echo "$LISTING" | sed -n 's/^gallery_ai-.*-t\([0-9]\+\)\.apk$/\1/p' | sort -n | tail -1)
-  N=$(( ( LAST_FILE > ${LAST_SEEN:-0} ? LAST_FILE : ${LAST_SEEN:-0} ) + 1 ))
-  echo "$N" > "$COUNTER"
+  read -r STORED_V STORED_N < "$COUNTER" 2>/dev/null || true
+  STORED_V="${STORED_V:-}"; STORED_N="${STORED_N:-0}"
+  [ "$STORED_V" = "$VERSION" ] || STORED_N=0
+  SEEN=$(echo "$LISTING" | sed -n "s/^gallery_ai-${VERSION}-t\([0-9]\+\)\.apk$/\1/p" | sort -n | tail -1)
+  BASE=$(( STORED_N > ${SEEN:-0} ? STORED_N : ${SEEN:-0} ))
+  N=$(( BASE + 1 ))
+  echo "$VERSION $N" > "$COUNTER"
   NAME="gallery_ai-${VERSION}-t${N}.apk"
 fi
 

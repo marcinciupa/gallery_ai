@@ -11,6 +11,7 @@ import { dims, gradient } from '../../theme/tokens';
 import { useTheme } from '../../theme/ThemeContext';
 import { Bevel } from './primitives';
 import { RecordKey, ScreenKey, KeyVariant } from './KeyButton';
+import type { KeyIconName } from '../icons/keyIcons.gen';
 import { Joystick, JoystickConfig } from './Joystick';
 
 /** Definicja klawisza "screen" (krawędzie). Pusty label = klawisz bez treści (widmo). */
@@ -18,6 +19,8 @@ export type ScreenKeyDef = {
   label: string;
   supporting?: string;
   variant?: KeyVariant;
+  /** Jawna ikona (tryb KEY ICONS) — nadpisuje mapę label→ikona; np. SIZE zależnie od liczby kolumn. */
+  icon?: KeyIconName;
   onPress?: () => void;
   onLongPress?: () => void;
   onHoldComplete?: () => void;
@@ -28,7 +31,7 @@ export type ScreenKeyDef = {
 };
 /** Definicja klawisza "metal" (wewnątrz, PREV/NEXT): etykietowany albo record/shutter. */
 export type MetalKeyDef =
-  | { type: 'label'; upper: string; lower?: string; active?: boolean; lowerActive?: boolean; variant?: KeyVariant; onPress?: () => void }
+  | { type: 'label'; upper: string; lower?: string; active?: boolean; lowerActive?: boolean; variant?: KeyVariant; icon?: KeyIconName; onPress?: () => void }
   | { type: 'record'; onPress?: () => void };
 
 /**
@@ -39,7 +42,7 @@ export type KeyboardConfig = { screen: ScreenKeyDef[]; metal: MetalKeyDef[]; joy
 
 const EMPTY_KEYBOARD: KeyboardConfig = { screen: [], metal: [] };
 
-function MetalKey({ def }: { def?: MetalKeyDef }) {
+function MetalKey({ def, icons }: { def?: MetalKeyDef; icons?: boolean }) {
   if (!def) return <View style={{ width: dims.key.size, height: dims.key.size }} />;
   if (def.type === 'record') return <RecordKey onPress={def.onPress} />;
   // Klawisze wewnętrzne (poz. 2 i 4, dawniej metalowe PREV/NEXT/ROTATE) renderujemy jako "screen"
@@ -50,18 +53,21 @@ function MetalKey({ def }: { def?: MetalKeyDef }) {
       supporting={def.lower}
       variant={def.variant}
       active={def.active}
+      icons={icons}
+      icon={def.icon}
       onPress={def.active === false ? undefined : def.onPress}
     />
   );
 }
 
-function ScreenSlot({ def }: { def?: ScreenKeyDef }) {
+function ScreenSlot({ def, icons }: { def?: ScreenKeyDef; icons?: boolean }) {
   if (!def) return <View style={{ width: dims.key.size, height: dims.key.size }} />;
   return (
     <ScreenKey
       label={def.label}
       supporting={def.supporting}
       variant={def.variant}
+      icon={def.icon}
       onPress={def.onPress}
       onLongPress={def.onLongPress}
       onHoldComplete={def.onHoldComplete}
@@ -69,11 +75,12 @@ function ScreenSlot({ def }: { def?: ScreenKeyDef }) {
       onHoldCancel={def.onHoldCancel}
       holdMs={def.holdMs}
       progress={def.progress}
+      icons={icons}
     />
   );
 }
 
-export function Keyboard({ config = EMPTY_KEYBOARD }: { config?: KeyboardConfig }) {
+export function Keyboard({ config = EMPTY_KEYBOARD, keyIcons }: { config?: KeyboardConfig; keyIcons?: boolean }) {
   const t = useTheme();
   const { screen, metal, joystick } = config;
   return (
@@ -100,11 +107,11 @@ export function Keyboard({ config = EMPTY_KEYBOARD }: { config?: KeyboardConfig 
         }}
       >
         {/* key = pozycja+label: zmiana klawisza w slocie REMONTUJE go → cleanup czyści hold-timer */}
-        <ScreenSlot key={`s0:${screen[0]?.label ?? ''}`} def={screen[0]} />
-        <MetalKey key="m0" def={metal[0]} />
+        <ScreenSlot key={`s0:${screen[0]?.label ?? ''}`} def={screen[0]} icons={keyIcons} />
+        <MetalKey key="m0" def={metal[0]} icons={keyIcons} />
         <Joystick config={joystick} />
-        <MetalKey key="m1" def={metal[1]} />
-        <ScreenSlot key={`s1:${screen[1]?.label ?? ''}`} def={screen[1]} />
+        <MetalKey key="m1" def={metal[1]} icons={keyIcons} />
+        <ScreenSlot key={`s1:${screen[1]?.label ?? ''}`} def={screen[1]} icons={keyIcons} />
       </Bevel>
     </View>
   );

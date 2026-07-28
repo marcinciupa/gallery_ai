@@ -237,10 +237,15 @@ export function ImmersiveViewer({
       }
       // paginacja: animujemy pasek do pozycji SĄSIADA (-(idx±1)*w) i dopiero potem zmieniamy index; pozycja
       // spoczynkowa nowego indeksu = koniec animacji → brak skoku re-centrowania (i brak podmiany source środka).
-      const TH = w * 0.22;
-      if (g.dx < -TH && idx < cnt - 1) {
+      // Zmiana zdjęcia na ODLEGŁOŚĆ (mniejszy próg) LUB na PRĘDKOŚĆ (flick) — wcześniej wymagało 22% szerokości
+      // i ignorowało prędkość, więc krótki szybki gest nic nie robił = „za dużo wysiłku".
+      const TH = w * 0.14;
+      const FLING = 0.3; // px/ms — szybki ruch przełącza mimo krótkiej drogi
+      const next = (g.dx < -TH || g.vx < -FLING) && idx < cnt - 1;
+      const prev = (g.dx > TH || g.vx > FLING) && idx > 0;
+      if (next) {
         Animated.timing(pageX, { toValue: -(idx + 1) * w, duration: 180, useNativeDriver: false }).start(() => setIndexRef.current(idx + 1));
-      } else if (g.dx > TH && idx > 0) {
+      } else if (prev) {
         Animated.timing(pageX, { toValue: -(idx - 1) * w, duration: 180, useNativeDriver: false }).start(() => setIndexRef.current(idx - 1));
       } else {
         Animated.spring(pageX, { toValue: -idx * w, useNativeDriver: false }).start();

@@ -34,6 +34,7 @@ function Body({
   recording,
   motion,
   keyboard,
+  keyIcons,
   hideControls,
   onPinch,
   onScreenPinch,
@@ -45,6 +46,7 @@ function Body({
   recording?: boolean;
   motion?: boolean;
   keyboard?: KeyboardConfig;
+  keyIcons?: boolean;
   hideControls?: boolean;
   onPinch?: (dir: 'in' | 'out') => void;
   onScreenPinch?: (dir: 'in' | 'out') => void;
@@ -201,7 +203,7 @@ function Body({
       </View>
       {/* dolna sekcja obudowy (klawiatura z joystickiem) */}
       <View style={[{ alignSelf: 'stretch', alignItems: 'center' }, hideControls && kbH > 0 ? { height: kbH, overflow: 'hidden' } : null]}>
-        <Keyboard config={keyboard} />
+        <Keyboard config={keyboard} keyIcons={keyIcons} />
       </View>
       {/* BEVEL OBUDOWY. micH = pas górny, screenH = szyba. Guard tylko na screenH. (DIAG: bevels) */}
       {diag.bevels && screenH > 0 && (
@@ -260,6 +262,7 @@ export function DeviceShell({
   theme = 'LIGHT',
   motion = false,
   keyboard,
+  keyIcons,
   hideControls,
   onPinch,
   onScreenPinch,
@@ -272,6 +275,7 @@ export function DeviceShell({
   theme?: ThemeName;
   motion?: boolean;
   keyboard?: KeyboardConfig;
+  keyIcons?: boolean;
   hideControls?: boolean;
   onPinch?: (dir: 'in' | 'out') => void;
   onScreenPinch?: (dir: 'in' | 'out') => void;
@@ -288,6 +292,7 @@ export function DeviceShell({
             recording={recording}
             motion={motion}
             keyboard={keyboard}
+            keyIcons={keyIcons}
             hideControls={hideControls}
             onPinch={onPinch}
             onScreenPinch={onScreenPinch}
@@ -310,6 +315,7 @@ export function DeviceShell({
             recording={recording}
             motion={motion}
             keyboard={keyboard}
+            keyIcons={keyIcons}
             hideControls={hideControls}
             onPinch={onPinch}
             onScreenPinch={onScreenPinch}

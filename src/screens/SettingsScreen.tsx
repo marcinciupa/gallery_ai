@@ -168,6 +168,7 @@ const INITIAL_SECTIONS: SectionData[] = [
     items: [
       { label: 'FULLSCREEN', options: ['OFF', 'ON'], value: 1 }, // DOMYŚLNIE ON (fullscreen)
       { label: 'LEFT-HANDED MODE', options: ['OFF', 'ON'], value: 0 },
+      { label: 'KEY ICONS', options: ['OFF', 'ON'], value: 1 }, // DOMYŚLNIE ON — ikony zamiast tekstu na klawiszach
       { label: 'THEME', options: ['LIGHT', 'DARK', 'ORANGE', 'NAVY'], value: 1 }, // DOMYŚLNIE DARK
       { label: 'DISPLAY MATRIX', options: ['OFF', 'ON'], value: 1 }, // matryca ekranu (przeniesione z DIAGNOSTICS)
     ],
@@ -526,6 +527,8 @@ export function useSettingsScreen({
   const screenMode = (scrItem ? scrItem.options[scrItem.value] : 'IMMERSIVE') as DisplayMode;
   const perfItem = flat.find((it) => it.label === 'PERFORMANCE HUD');
   const perfHud = perfItem ? perfItem.options[perfItem.value] === 'ON' : false;
+  const kiItem = flat.find((it) => it.label === 'KEY ICONS');
+  const keyIcons = kiItem ? kiItem.options[kiItem.value] === 'ON' : false;
   const pbItem = flat.find((it) => it.label === 'PROMPT BOOSTER');
   const promptBooster = pbItem ? pbItem.options[pbItem.value] === 'ACTIVE' : false;
   // DIAG: obiekt flag z sekcji DIAG (domyślnie ON, gdy brak wiersza)
@@ -552,6 +555,7 @@ export function useSettingsScreen({
     keepScreenOn,
     screenMode,
     perfHud,
+    keyIcons,
     promptBooster,
     diag,
   };

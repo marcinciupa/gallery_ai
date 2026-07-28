@@ -20,6 +20,7 @@ const glow = { textShadowColor: textShadow.phosphor.color, textShadowRadius: tex
 const WELCOME_ROWS: { key: string; label: string }[] = [
   { key: 'THEME', label: 'THEME' },
   { key: 'FULLSCREEN', label: 'FULLSCREEN' },
+  { key: 'KEY ICONS', label: 'KEY ICONS' },
   { key: 'SCREEN', label: 'SCREEN MODE' },
   { key: 'LEFT-HANDED MODE', label: 'LEFT-HANDED' },
 ];

@@ -115,6 +115,11 @@ export function InfoPanel({ dims, fileSize, format, aiTools, aiPrompt, aiUpscale
 function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims, onImmersive, onExit }: { source: ImageSourcePropType; onPrev?: () => void; onNext?: () => void; onSwipeUp?: () => void; onSwipeDown?: () => void; onDims?: (w: number, h: number) => void; onImmersive?: () => void; onExit?: () => void }) {
   const immersedRef = useRef(false); // gest ZUŻYTY (pinch-out → immersive, pinch-in → wyjście) — jednorazowo na gest
   const initRatio = useMemo(() => {
+    // Wymiary z METADANYCH źródła (mediaWidth/mediaHeight) — znane OD RAZU, więc dopasowanie jest poprawne
+    // przy pierwszej klatce. Wcześniej brano je z resolveAssetSource, które dla content:// URI zwraca puste
+    // → ratio=1 (kwadrat) → obraz błyskał w złym rozmiarze, aż onLoad podał realne proporcje.
+    const mw = (source as any)?.mediaWidth, mh = (source as any)?.mediaHeight;
+    if (mw && mh) return mw / mh;
     try { const a = RNImage.resolveAssetSource(source as any); return a?.width && a?.height ? a.width / a.height : 1; } catch { return 1; }
   }, [source]);
   const [ratio, setRatio] = useState(initRatio); // szer/wys
@@ -371,7 +376,8 @@ export function useImageEditor({
     if (menuTier === 'sub') setAiIdx((i) => (i + d + AI_FUNCS.length) % AI_FUNCS.length);
     else setMainIdx((i) => (i + d + MAIN_TABS.length) % MAIN_TABS.length);
   };
-  const menuTierUp = () => { if (mainIdx === 0) setMenuTier('sub'); };   // pod-pasek jest NAD paskiem głównym
+  // Pion: GÓRA wchodzi na poziom 2 (pod-pasek AI, tylko gdy AI EDIT), DÓŁ cofa na poziom 1.
+  const menuTierUp = () => { if (mainIdx === 0) setMenuTier('sub'); };
   const menuTierDown = () => setMenuTier('main');
   const menuActivate = () => {
     if (menuTier === 'sub') { activateAiFunc(aiIdx); return; }
@@ -470,6 +476,7 @@ export function useImageEditor({
     // BACK najpierw ZWIJA poziom 2 menu (pasek trybów / pokrętło pędzla), dopiero potem wychodzi z widoku.
     if (magicRef.current?.collapse()) return true;
     if (aiMaskRef.current?.collapse()) return true;
+    if (menuTier === 'sub') { setMenuTier('main'); return true; } // zwiń poziom 2 menu EDIT
     if (infoOpen) { setInfoOpen(false); return true; }
     if (view !== 'viewer') { setView('viewer'); return true; }
     if (menuOpen) { setMenuOpen(false); return true; }
@@ -693,7 +700,7 @@ export function useImageEditor({
             Pod-pasek funkcji AI (MAGIC ERASE / TEXT TO IMAGE / FILTERS) tylko gdy aktywna zakładka AI EDIT. */}
         {menuOpen && view === 'viewer' ? (
           <View style={{ alignSelf: 'stretch', gap: 16 }}>
-            {mainIdx === 0 ? <MenuBar items={AI_FUNCS} index={aiIdx} focused={menuTier === 'sub'} onPick={chooseAiFunc} /> : null}
+            {menuTier === 'sub' ? <MenuBar items={AI_FUNCS} index={aiIdx} focused onPick={chooseAiFunc} /> : null}
             <MenuBar items={MAIN_TABS} index={mainIdx} focused={menuTier === 'main'} onPick={chooseMainTab} />
           </View>
         ) : null}

@@ -8,6 +8,18 @@ import { Pressable, View, Text, GestureResponderEvent, Animated } from 'react-na
 import Svg, { Circle } from 'react-native-svg';
 import { LinearGradient } from 'expo-linear-gradient';
 import { color, dims, font, gradient, shadow, textShadow, elevationShadow } from '../../theme/tokens';
+import { KeyIcon } from '../icons/KeyIcon';
+import type { KeyIconName } from '../icons/keyIcons.gen';
+
+// Label klawisza → nazwa ikony (Figma 496:24601). Klawisze bez wpisu zostają tekstem nawet w trybie ikon.
+const LABEL_ICON: Record<string, KeyIconName> = {
+  BACK: 'back', CLOSE: 'close', EXIT: 'exit', MENU: 'menu', 'CLOSE\nMENU': 'close', CONFIRM: 'confirm',
+  CANCEL: 'close', SKIP: 'skip', START: 'start', FOLDERS: 'folders', MOMENTS: 'moments', FEED: 'feed',
+  TOGGLE: 'toggle', FULLSCREEN: 'fullscreen', EDIT: 'edit', 'CLOSE\nEDIT': 'close_edit', SAVE: 'save',
+  RESET: 'reset', UNDO: 'undo', SEND: 'send', 'FILL\nAI': 'fill', 'KEY-\nBOARD': 'keyboard', KEYBOARD: 'keyboard',
+  TRASH: 'trash', RESTORE: 'restore', DELETE: 'delete', INFO: 'info', 'HIDE\nINFO': 'hide_info',
+  APPLY: 'confirm', SIZE: 'cols2',
+};
 import { useTheme } from '../../theme/ThemeContext';
 import { useTiltCtx } from '../../theme/TiltContext';
 import { hapticPress, hapticRelease, hapticShort, hapticHold, hapticCancel } from '../../lib/haptics';
@@ -38,9 +50,9 @@ export function ClickedDim({ radius }: { radius?: number } = {}) {
 
 /** ProgressRing — pierścień postępu przytrzymania, wypełnia się 0→1 w trakcie hold. */
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
-function ProgressRing({ progress, ringColor }: { progress: Animated.Value; ringColor: string }) {
+function ProgressRing({ progress, ringColor, dot }: { progress: Animated.Value; ringColor: string; dot?: boolean }) {
   const size = dims.keyInner.size;
-  const sw = 2;
+  const sw = 4; // 2× grubość; kropka = sw, r = (size-sw)/2 trzyma krawędź na size/2 (średnica inner_reduction)
   const r = (size - sw) / 2;
   const c = 2 * Math.PI * r;
   const offset = progress.interpolate({ inputRange: [0, 1], outputRange: [c, 0] });
@@ -59,15 +71,17 @@ function ProgressRing({ progress, ringColor }: { progress: Animated.Value; ringC
           strokeLinecap="round"
           transform={`rotate(-90 ${size / 2} ${size / 2})`}
         />
+        {/* kropka w punkcie STARTU pierścienia (góra, 12:00), średnica = szerokość ringa */}
+        {dot ? <Circle cx={size / 2} cy={sw / 2} r={sw / 2} fill={ringColor} /> : null}
       </Svg>
     </View>
   );
 }
 
 /** StaticRing — statyczny pierścień wypełniony w `fraction` (0..1). Start od dołu (180°). */
-function StaticRing({ fraction, ringColor }: { fraction: number; ringColor: string }) {
+function StaticRing({ fraction, ringColor, dot }: { fraction: number; ringColor: string; dot?: boolean }) {
   const size = dims.keyInner.size;
-  const sw = 2;
+  const sw = 4; // 2× grubość; kropka = sw, r = (size-sw)/2 trzyma krawędź na size/2 (średnica inner_reduction)
   const r = (size - sw) / 2;
   const c = 2 * Math.PI * r;
   const f = Math.max(0, Math.min(1, fraction));
@@ -86,6 +100,8 @@ function StaticRing({ fraction, ringColor }: { fraction: number; ringColor: stri
           strokeLinecap="round"
           transform={`rotate(90 ${size / 2} ${size / 2})`}
         />
+        {/* kropka w punkcie STARTU pierścienia (dół, 6:00), średnica = szerokość ringa */}
+        {dot ? <Circle cx={size / 2} cy={size - sw / 2} r={sw / 2} fill={ringColor} /> : null}
       </Svg>
     </View>
   );
@@ -237,6 +253,8 @@ export function ScreenKey({
   onHoldCancel,
   holdMs = 2000,
   progress: progressFraction,
+  icons,
+  icon,
 }: {
   label: string;
   supporting?: string;
@@ -250,7 +268,11 @@ export function ScreenKey({
   onHoldCancel?: () => void;
   holdMs?: number;
   progress?: number;
+  icons?: boolean;
+  /** Jawna nazwa ikony — nadpisuje mapę LABEL_ICON (np. SIZE: cols2/cols3 zależnie od stanu). */
+  icon?: KeyIconName;
 }) {
+  const iconName = icon ?? LABEL_ICON[label];
   const dark = variant === 'primary' || variant === 'highRisk';
   const fg = dark ? color.dark1A : variant === 'risk' ? color.recordRed : color.phosphor;
   const glowColor = variant === 'risk' ? 'rgba(255,76,76,0.25)' : textShadow.phosphor.color;
@@ -308,34 +330,47 @@ export function ScreenKey({
       onPressIn={onHoldComplete ? startHold : undefined}
       onPressOut={onHoldComplete ? cancelHold : undefined}
     >
-      {onHoldComplete ? <ProgressRing progress={progress} ringColor={ringColor} /> : null}
-      {progressFraction != null ? <StaticRing fraction={progressFraction} ringColor={ringColor} /> : null}
-      <Text
-        style={{
-          fontFamily: font.monoLabel.family,
-          fontSize: font.monoLabel.size,
-          color: fg,
-          opacity: dim,
-          textAlign: 'center',
-          ...glow,
-        }}
-      >
-        {label}
-      </Text>
-      {supporting ? (
-        <Text
-          style={{
-            fontFamily: font.monoCaption.family,
-            fontSize: font.monoCaption.size,
-            color: fg,
-            opacity: dim,
-            textAlign: 'center',
-            ...glow,
-          }}
+      {onHoldComplete ? <ProgressRing progress={progress} ringColor={ringColor} dot={!!(icons && iconName)} /> : null}
+      {progressFraction != null ? <StaticRing fraction={progressFraction} ringColor={ringColor} dot={!!(icons && iconName)} /> : null}
+      {icons && iconName ? (
+        // TRYB IKON: sam glif wyśrodkowany; support (np. [HOLD]) NIE jest tekstem — zastępuje go kropka
+        // na starcie pierścienia (patrz ProgressRing/StaticRing `dot`).
+        <View
+          pointerEvents="none"
+          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', opacity: dim }}
         >
-          {supporting}
-        </Text>
-      ) : null}
+          <KeyIcon name={iconName} size={26} color={fg} glow={!!glow} />
+        </View>
+      ) : (
+        <>
+          <Text
+            style={{
+              fontFamily: font.monoLabel.family,
+              fontSize: font.monoLabel.size,
+              color: fg,
+              opacity: dim,
+              textAlign: 'center',
+              ...glow,
+            }}
+          >
+            {label}
+          </Text>
+          {supporting ? (
+            <Text
+              style={{
+                fontFamily: font.monoCaption.family,
+                fontSize: font.monoCaption.size,
+                color: fg,
+                opacity: dim,
+                textAlign: 'center',
+                ...glow,
+              }}
+            >
+              {supporting}
+            </Text>
+          ) : null}
+        </>
+      )}
     </KeyButton>
   );
 }
