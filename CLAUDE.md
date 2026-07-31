@@ -86,9 +86,20 @@ Realny skeuomorfizm (tekstura, haptyka, tilt) tylko natywnie (Expo Go / dev buil
 - **⚠️ Backend i apka wydają się RAZEM**: kompozycja z maską żyje w `server/`, więc sam AAB jej nie przyniesie.
   Kolejność: `railway up --service gallery-ai-backend` z `server/` → dopiero potem publikacja AAB (apka bez
   świeżego proxy dostanie po prostu starą, nielokalizowaną edycję — nie wywali się, ale bug wróci).
-- **STAN 2026-07-31 (v0.963 / vc 9630)**: backend z maską WDROŻONY na Railway i sprawdzony e2e po produkcyjnym
+- **⚠️ PLIKI ROBOCZE NIE MOGĄ LEŻEĆ W CACHE** (znalezione testem na emulatorze, v0.963 → 0.9635): wynik edycji
+  wracał jako `data:` i lądował w `cacheDirectory`, a Android kasuje cache aplikacji przy braku miejsca
+  (`pm trim-caches`; urządzenie testowe miało /data zajęte w 93%). Objaw mylący: obraz był WIDOCZNY (siedział
+  w cache'u `expo-image`), ale SAVE padał z `FileNotFoundException` — czyli „edycja jest, tylko nie da się jej
+  zachować". `localFile.ts` używa teraz `documentDirectory/gai-work/` + sprzątanie po dobie, a `persistWorkFile()`
+  przenosi tam też wynik `expo-image-manipulator` (kadr). Regresja-test: `pm trim-caches 4G` między APPLY a SAVE.
+- **STAN 2026-07-31 (v0.9635 / vc 9635)**: backend z maską WDROŻONY na Railway i sprawdzony e2e po produkcyjnym
   URL-u (`/health` → `masking: true, webhooks: true`; trasy 9–17 s, mieszczą się w 90 s limitu apki). AAB
-  zbudowany na EAS. **Zostało: wysłać AAB na Google Play** + wkleić „What's new" ze `store_assets/release_notes_en.md`.
+  zbudowany na EAS i PRZETESTOWANY na emulatorze (Pixel 7 API 34, AAB → bundletool → APK): start, galeria,
+  malowanie maski, MAGIC ERASE przez produkcyjny backend, SAVE do galerii, CROP → SAVE.
+  **Zostało: wysłać AAB na Google Play** + wkleić „What's new" ze `store_assets/release_notes_en.md`.
+- **Jak przetestować AAB bez telefonu**: `bundletool build-apks --mode=universal` → `adb install`; emulator
+  `Pixel_7_API_34` jest w SDK. Uwaga: AVD bywa na granicy miejsca — `INSTALL_FAILED_INSUFFICIENT_STORAGE`
+  leczy `pm trim-caches`.
 
 ## Kluczowe decyzje designowe (podjęte)
 - **Tryb wyświetlania ekranu = wybór użytkownika, 3 poziomy** (§11b.1): IMMERSIVE (B&W+fosfor+matryca),
