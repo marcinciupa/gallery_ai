@@ -42,7 +42,12 @@ export async function ensureLocalFile(uri: string): Promise<string> {
     const comma = uri.indexOf(',');
     if (comma < 0) throw new Error('malformed data uri');
     const base64 = uri.slice(comma + 1);
-    const dest = cacheDest('png');
+    // Rozszerzenie WPROST z typu MIME — proxy oddaje kompozycję z maską jako JPEG, a plik `.png`
+    // z bajtami JPEG-a myli MediaStore przy zapisie do galerii (zły mime na zapisanym zdjęciu).
+    const semi = uri.indexOf(';');
+    const mime = uri.slice(5, semi >= 0 && semi < comma ? semi : comma).toLowerCase();
+    const ext = mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : mime.includes('webp') ? 'webp' : 'png';
+    const dest = cacheDest(ext);
     await FileSystem.writeAsStringAsync(dest, base64, { encoding: FileSystem.EncodingType.Base64 });
     return dest;
   }

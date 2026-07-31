@@ -4,13 +4,15 @@
  * + logikę apply (erase / remove-background); malowanie i pędzel są w [[MaskCanvas]].
  *
  * Klawiatura (w EditorScreen): APPLY · UNDO · joy · RESET · BACK; po zastosowaniu → SAVE.
- * STAN: APPLY woła STUB deAPI (echo) — realny inpaint z maską po podłączeniu proxy (rasteryzacja = TODO).
+ * APPLY wysyła zdjęcie RAZEM z maską — proxy kadruje wycinek wokół zaznaczenia i składa wynik z
+ * oryginałem, więc usuwanie zostaje w zamalowanym obszarze (bez maski model przerabiał całe zdjęcie).
  */
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { View, Image as RNImage, ImageSourcePropType } from 'react-native';
 import { MaskCanvas, MaskCanvasHandle } from './MaskCanvas';
 import { MenuBar } from '../components/chrome/MenuBar';
 import { eraseImage, removeBackground } from '../lib/deapi';
+import { ensureLocalFile } from '../lib/localFile';
 
 const FIRST_TABS = ['MODE', 'BRUSH SIZE', 'REMOVE BACKGROUND'] as const;
 
@@ -27,10 +29,16 @@ export type MagicEraseHandle = {
 export const MagicEraseStage = forwardRef<MagicEraseHandle, {
   source: ImageSourcePropType;
   onResult?: (uri: string | null) => void;
+  onError?: (msg: string) => void; // błąd backendu do pokazania użytkownikowi (rodzic: toast)
   onState?: (s: MagicEraseState) => void;
-}>(function MagicEraseStage({ source, onResult, onState }, ref) {
+}>(function MagicEraseStage({ source, onResult, onError, onState }, ref) {
   const baseUri = useMemo(() => { try { return RNImage.resolveAssetSource(source as any)?.uri ?? ''; } catch { return ''; } }, [source]);
   const maskRef = useRef<MaskCanvasHandle>(null);
+  // Propy w refach: `useImperativeHandle` (deps `[baseUri]`) zamraża `doApply`, a razem z nim domknięte
+  // propy. Bez tego APPLY po przełączeniu na REMOVE BACKGROUND raportowało wynik callbackiem sprzed
+  // przełączenia i w panelu INFO lądował zły ślad AI („MAGIC ERASE" zamiast „REMOVE BG").
+  const onResultRef = useRef(onResult); onResultRef.current = onResult;
+  const onErrorRef = useRef(onError); onErrorRef.current = onError;
 
   const [first, setFirst] = useState(0);          // MODE / BRUSH SIZE / REMOVE BACKGROUND
   const [level, setLevel] = useState<'first' | 'second'>('first');
@@ -53,9 +61,22 @@ export const MagicEraseStage = forwardRef<MagicEraseHandle, {
     if (!removeBg && !strokesRef.current) return; // nic nie zaznaczono
     setProcessing(true);
     try {
-      const res = removeBg ? await removeBackground({ uri: baseUri }) : await eraseImage({ uri: baseUri });
-      if (res?.uri) { setApplied(true); onResult?.(res.uri); maskRef.current?.clear(); }
-    } catch { /* stub nie rzuca; realny błąd → zostaw stan do ponowienia */ } finally {
+      // maska = zamalowany obszar; bez niej backend usuwałby „cokolwiek niechcianego" z całego zdjęcia
+      const res = removeBg ? await removeBackground({ uri: baseUri }) : await eraseImage({ uri: baseUri, mask: maskRef.current?.getMask() });
+      if (res?.uri) {
+        // Trasa z maską oddaje gotowy obraz jako `data:` (kompozycja proxy), a nie krótki URL — bez
+        // sprowadzenia do pliku wielomegabajtowy string krążyłby po stanie, kluczach komponentów
+        // i cache'u obrazów (ścieżka TEXT TO IMAGE robi to samo).
+        const local = await ensureLocalFile(res.uri);
+        setApplied(true);
+        onResultRef.current?.(local);
+        maskRef.current?.clear();
+      }
+    } catch (e) {
+      // Widok MAGIC ERASE nie ma gdzie renderować błędu, więc bez tego 400/422/502/timeout kończył się
+      // samym zniknięciem napisu „ERASING…" — użytkownik nie wiedział, że cokolwiek poszło nie tak.
+      onErrorRef.current?.(e instanceof Error ? `ERROR: ${e.message}` : 'ERASE FAILED');
+    } finally {
       setProcessing(false);
     }
   };
@@ -69,7 +90,7 @@ export const MagicEraseStage = forwardRef<MagicEraseHandle, {
     collapse: () => { if (levelRef.current === 'second') { setLevel('first'); return true; } return false; },
     apply: () => { void doApply(); },
     undo: () => maskRef.current?.undo(),
-    reset: () => { maskRef.current?.reset(); setApplied(false); onResult?.(null); },
+    reset: () => { maskRef.current?.reset(); setApplied(false); onResultRef.current?.(null); },
   }), [baseUri]);
 
   // Poziom 2 odsłania się DOPIERO po zatwierdzeniu zakładki (patrz AiStage — ta sama zasada).

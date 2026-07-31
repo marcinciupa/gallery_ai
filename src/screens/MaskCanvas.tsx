@@ -1,7 +1,15 @@
 /**
  * MaskCanvas — współdzielona powierzchnia maski malowanej PALCEM + sterowanie pędzlem (rozmiar / tryb add-remove).
  * Używana przez MAGIC ERASE i TEXT TO IMAGE (inpainting). Zdjęcie może być przygaszone „welonem"; namalowany
- * obszar świeci fosforem (add) lub jest wycinany (remove). Rasteryzacja maski do PNG dla backendu = TODO.
+ * obszar świeci fosforem (add) lub jest wycinany (remove).
+ *
+ * MASKA IDZIE DO BACKENDU — `getMask()` oddaje pociągnięcia WEKTOROWO (kilka kB JSON-a) zamiast rasteryzować
+ * PNG na telefonie. Rasteryzuje je proxy, już w rozdzielczości realnego zdjęcia (patrz server/src/mask.ts),
+ * dzięki czemu maska nigdy się nie rozjeżdża ze zdjęciem, a apka nie potrzebuje canvasa ani Skii.
+ *
+ * WSPÓŁRZĘDNE: pociągnięcia trzymamy ZNORMALIZOWANE (0…1 względem pola obrazu), a nie w pikselach ekranu —
+ * to ten sam układ, w którym rozumie je backend, i maska przeżywa zmianę rozmiaru pola (device ⇄ fullscreen,
+ * obrót), zamiast rozjeżdżać się względem zdjęcia. `size` = szerokość pędzla znormalizowana do SZEROKOŚCI pola.
  *
  * Podział odpowiedzialności: MaskCanvas trzyma pędzel (rozmiar/tryb) + pociągnięcia + POD-PASEK (MODE / BRUSH
  * SIZE). PASEK GŁÓWNY (zakładki) i logikę „apply/send" trzyma rodzic (MagicEraseStage / AiStage).
@@ -14,6 +22,7 @@ import Svg, { Path, Defs, Mask, Rect, Image as SvgImage } from 'react-native-svg
 import { color, font, screen, textShadow } from '../theme/tokens';
 import { hapticTick, hapticDetent } from '../lib/haptics';
 import { MenuBar } from '../components/chrome/MenuBar';
+import type { MaskPaths } from '../lib/deapi';
 
 const phosphorGlow = {
   textShadowColor: textShadow.phosphor.color,
@@ -29,14 +38,15 @@ const VEIL = 'rgba(26,26,26,0.72)'; // przygaszenie niezaznaczonego zdjęcia (za
 const RING = 2;                     // grubość fosforowej obwódki (px) — powstaje na KAŻDEJ krawędzi zaznaczenia (add i remove)
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 
-type Pt = { x: number; y: number };
-type Stroke = { mode: 0 | 1; size: number; pts: Pt[] };
+type Pt = { x: number; y: number };            // 0…1 względem pola obrazu
+type Stroke = { mode: 0 | 1; size: number; pts: Pt[] }; // size = 0…1 względem SZEROKOŚCI pola
 
-/** Ścieżka SVG z punktów; pojedynczy punkt → kropka (round cap). */
-function toPath(pts: Pt[]): string {
-  if (pts.length === 0) return '';
-  const [h, ...t] = pts;
-  return `M ${h.x} ${h.y} ` + (t.length ? t.map((p) => `L ${p.x} ${p.y}`).join(' ') : `L ${h.x} ${h.y}`);
+/** Ścieżka SVG z punktów znormalizowanych; skala = rozmiar pola. Pojedynczy punkt → kropka (round cap). */
+function toPath(pts: Pt[], w: number, h: number): string {
+  const [head, ...rest] = pts;
+  if (!head) return '';
+  const at = (p: Pt) => `${p.x * w} ${p.y * h}`;
+  return `M ${at(head)} ` + (rest.length ? rest.map((p) => `L ${at(p)}`).join(' ') : `L ${at(head)}`);
 }
 
 /**
@@ -87,6 +97,7 @@ export type MaskCanvasHandle = {
   undo: () => void;                // cofnij ostatnie pociągnięcie
   reset: () => void;               // wyczyść maskę
   clear: () => void;               // wyczyść maskę bez raportu (np. po wysłaniu)
+  getMask: () => MaskPaths | null; // maska dla backendu (null = nic nie zamalowano)
 };
 
 export const MaskCanvas = forwardRef<MaskCanvasHandle, {
@@ -134,27 +145,39 @@ export const MaskCanvas = forwardRef<MaskCanvasHandle, {
   const fit = areaW > 0 && areaH > 0
     ? (areaW / areaH > ratio ? { w: areaH * ratio, h: areaH } : { w: areaW, h: areaW / ratio })
     : { w: 0, h: 0 };
-  useEffect(() => { onState?.({ hasStrokes: strokes.length > 0 }); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [strokes.length]);
+  const fitRef = useRef(fit); fitRef.current = fit; // responder potrzebuje aktualnego pola do normalizacji
+  // ZAZNACZENIE = istnieje choć jedno pociągnięcie ADD. Same pociągnięcia REMOVE nic nie zaznaczają
+  // (to gumka), więc rodzic nie może na ich podstawie odblokować APPLY — poszłaby edycja bez maski,
+  // czyli na całym zdjęciu.
+  const hasSelection = strokes.some((s) => s.mode === 0);
+  useEffect(() => { onState?.({ hasStrokes: hasSelection }); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [hasSelection]);
 
   // responder SIEDZI na POLU OBRAZU (fit-box, pointerEvents="box-only"), więc locationX/Y jest wprost we
-  // współrzędnych maski/obrazu — bez korekty offsetu (wcześniej odejmowany offset przesuwał malowanie).
+  // współrzędnych pola — wystarczy podzielić przez jego rozmiar, żeby dostać układ znormalizowany.
+  const MIN_STEP = 2; // px ekranu między próbkami pociągnięcia (mniej = niepotrzebnie gęsta ścieżka)
   const responder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => paintRef.current,
       onMoveShouldSetPanResponder: () => paintRef.current,
       onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: (e) => {
-        if (!paintRef.current) return;
-        const x = e.nativeEvent.locationX, y = e.nativeEvent.locationY;
-        const s: Stroke = { mode: modeRef.current, size: brushRef.current, pts: [{ x, y }] };
+        const box = fitRef.current;
+        if (!paintRef.current || box.w <= 0 || box.h <= 0) return;
+        const s: Stroke = {
+          mode: modeRef.current,
+          size: brushRef.current / box.w,
+          pts: [{ x: e.nativeEvent.locationX / box.w, y: e.nativeEvent.locationY / box.h }],
+        };
         liveRef.current = s; setLive(s);
         onPaintStart?.();
       },
       onPanResponderMove: (e) => {
         const s = liveRef.current; if (!s) return;
-        const x = e.nativeEvent.locationX, y = e.nativeEvent.locationY;
+        const box = fitRef.current;
+        if (box.w <= 0 || box.h <= 0) return;
+        const x = e.nativeEvent.locationX / box.w, y = e.nativeEvent.locationY / box.h;
         const last = s.pts[s.pts.length - 1];
-        if (Math.hypot(x - last.x, y - last.y) < 2) return;
+        if (!last || Math.hypot((x - last.x) * box.w, (y - last.y) * box.h) < MIN_STEP) return;
         const ns: Stroke = { ...s, pts: [...s.pts, { x, y }] };
         liveRef.current = ns; setLive(ns);
       },
@@ -162,6 +185,10 @@ export const MaskCanvas = forwardRef<MaskCanvasHandle, {
       onPanResponderTerminate: () => { const s = liveRef.current; liveRef.current = null; setLive(null); if (s) setStrokes((arr) => [...arr, s]); },
     }),
   ).current;
+
+  // strokes ZE STANU są nieaktualne w callbacku handle'a (domknięcie z pierwszego renderu) — do getMask
+  // czytamy ref, żeby wysłać dokładnie to, co widać na ekranie.
+  const strokesRef = useRef(strokes); strokesRef.current = strokes;
 
   useImperativeHandle(ref, () => ({
     navValue: (dir: -1 | 1) => {
@@ -171,6 +198,12 @@ export const MaskCanvas = forwardRef<MaskCanvasHandle, {
     undo: () => setStrokes((arr) => arr.slice(0, -1)),
     reset: () => { setStrokes([]); setLive(null); liveRef.current = null; },
     clear: () => { setStrokes([]); setLive(null); liveRef.current = null; },
+    getMask: () => {
+      const all = strokesRef.current;
+      // sama „gumka" (REMOVE) niczego nie zaznacza → dla backendu to pusta maska; lepiej powiedzieć null
+      if (!all.some((s) => s.mode === 0)) return null;
+      return { strokes: all.map((s) => ({ add: s.mode === 0, size: s.size, pts: s.pts.map((p) => [p.x, p.y] as [number, number]) })) };
+    },
   }), []);
 
   const allStrokes = live ? [...strokes, live] : strokes;
@@ -206,15 +239,16 @@ export const MaskCanvas = forwardRef<MaskCanvasHandle, {
                     {/* KSZTAŁT zaznaczenia (fosfor): add=biel, remove=czerń, pełna szerokość pędzla */}
                     <Mask id="mphos" x="0" y="0" width={fit.w} height={fit.h}>
                       {allStrokes.map((s, i) => (
-                        <Path key={i} d={toPath(s.pts)} stroke={s.mode === 0 ? '#fff' : '#000'} strokeWidth={s.size} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+                        <Path key={i} d={toPath(s.pts, fit.w, fit.h)} stroke={s.mode === 0 ? '#fff' : '#000'} strokeWidth={s.size * fit.w} strokeLinecap="round" strokeLinejoin="round" fill="none" />
                       ))}
                     </Mask>
                     {/* ODSŁONIĘTY oryginał = kształt WCIĄGNIĘTY o RING (add węższy, remove szerszy) → wokół CAŁEJ
                         granicy (także tam, gdzie odejmowano) zostaje fosforowa obwódka */}
                     <Mask id="mfill" x="0" y="0" width={fit.w} height={fit.h}>
-                      {allStrokes.map((s, i) => (
-                        <Path key={i} d={toPath(s.pts)} stroke={s.mode === 0 ? '#fff' : '#000'} strokeWidth={s.mode === 0 ? Math.max(1, s.size - 2 * RING) : s.size + 2 * RING} strokeLinecap="round" strokeLinejoin="round" fill="none" />
-                      ))}
+                      {allStrokes.map((s, i) => {
+                        const px = s.size * fit.w;
+                        return <Path key={i} d={toPath(s.pts, fit.w, fit.h)} stroke={s.mode === 0 ? '#fff' : '#000'} strokeWidth={s.mode === 0 ? Math.max(1, px - 2 * RING) : px + 2 * RING} strokeLinecap="round" strokeLinejoin="round" fill="none" />;
+                      })}
                     </Mask>
                   </Defs>
                   {/* fosforowy kształt całego zaznaczenia… */}

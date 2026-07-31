@@ -2,3 +2,6 @@ node_modules/
 .env
 .env*.local
 dist/
+
+# wyniki testu e2e (obrazy do obejrzenia)
+.e2e/

@@ -4,13 +4,15 @@
  * zamalowanego obszaru (inpainting); bez maski = edycja całego obrazu.
  *
  * Prezentacyjno-interaktywny: stan promptu (typing/draft/processing) trzyma edytor; maskę i pędzel — MaskCanvas.
- * Handle (nav/undo/reset) obsługuje joystick edytora. Rasteryzacja maski do PNG dla backendu = TODO.
+ * Handle (nav/undo/reset) obsługuje joystick edytora; `getMask()` oddaje zaznaczenie, które edytor dokłada
+ * do żądania — dzięki temu prompt zmienia TYLKO zamalowany obszar (bez maski: całe zdjęcie).
  */
 import { forwardRef, RefObject, useImperativeHandle, useRef, useState } from 'react';
 import { View, Text, Pressable, TextInput, ImageSourcePropType } from 'react-native';
 import { color, font, screen, textShadow } from '../theme/tokens';
 import { MaskCanvas, MaskCanvasHandle } from './MaskCanvas';
 import { MenuBar } from '../components/chrome/MenuBar';
+import type { MaskPaths } from '../lib/deapi';
 
 const phosphorGlow = {
   textShadowColor: textShadow.phosphor.color,
@@ -27,6 +29,8 @@ export type AiStageHandle = {
   collapse: () => boolean;
   undo: () => void;
   reset: () => void;
+  /** Zamalowany obszar dla backendu (null = brak maski → edycja całego obrazu). */
+  getMask: () => MaskPaths | null;
 };
 
 export const AiStage = forwardRef<AiStageHandle, {
@@ -58,6 +62,7 @@ export const AiStage = forwardRef<AiStageHandle, {
     collapse: () => { if (levelRef.current === 'second') { setLevel('first'); return true; } return false; },
     undo: () => maskRef.current?.undo(),
     reset: () => { maskRef.current?.reset(); setMasking(false); },
+    getMask: () => maskRef.current?.getMask() ?? null,
   }), []);
 
   const inputText = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: color.dark21, padding: 0 } as const;

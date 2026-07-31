@@ -57,6 +57,24 @@ Realny skeuomorfizm (tekstura, haptyka, tilt) tylko natywnie (Expo Go / dev buil
 - **Apka**: `src/lib/deapi.ts` woła proxy (`EXPO_PUBLIC_API_URL` + nagłówek `X-App-Key`); `src/lib/localFile.ts` sprowadza
   zdalny wynik do `file://` (upload/zapis/edycja łańcuchowa). AI działa TYLKO gdy `EXPO_PUBLIC_API_URL` wskazuje wdrożony
   backend; bez tego `AI_STUB` (echo obrazu). Dodano `expo-file-system`.
+- **⚠️ MASKA / INPAINTING (2026-07-31, v0.963)** — deAPI **nie ma maskowanego inpaintingu** (docs `images/edits`:
+  „Inpainting (`mask` parameter) is not supported"), więc model regeneruje CAŁY obraz i edycja rozlewała się daleko
+  poza zaznaczenie (zgłoszenia: MAGIC ERASE, TEXT TO IMAGE, GENERATIVE FILL). Rozwiązanie = **kompozycja z maską
+  po stronie proxy**: apka wysyła maskę WEKTOROWO (pole multipart `mask_paths`, współrzędne 0…1 względem pola
+  obrazu — `MaskCanvas.getMask()`), a serwer rasteryzuje ją w rozdzielczości zdjęcia (`server/src/mask.ts`),
+  kadruje ROI wokół zaznaczenia, puszcza edycję, dopasowuje ton i wkleja wynik przez rozmytą maskę
+  (`server/src/compose.ts`). Poza zaznaczeniem piksele zostają nietknięte. Odpowiedź to wtedy `{ image_base64, mime }`
+  (JPEG), a nie `{ uri }` — proxy oddaje własną kompozycję. **Bez `mask_paths` trasy działają po staremu**, żeby
+  już wydane wersje apki nie przestały działać.
+  - GENERATIVE FILL nie potrzebuje maski z apki — bierze ją z **kanału alfa** (przezroczyste rogi po obrocie kadru).
+    Dziury są **zalepiane przed wysyłką** (kolor najbliższego sąsiada + rozmycie): deAPI spłaszcza przezroczystość
+    do CZERNI, więc model dostawał czarny kwadrat i grzecznie go zostawiał.
+  - **⚠️ PUŁAPKA sharpa (kosztowała pół debugowania)**: operacje w JEDNYM łańcuchu wykonują się w stałej kolejności
+    WEWNĘTRZNEJ, nie w kolejności wywołań — `.blur(s).threshold(1)` odpalało próg PRZED rozmyciem. Każdy etap
+    zmiękczania maski musi być OSOBNYM wywołaniem sharpa. Druga pułapka: bufor raw 1-kanałowy jest promowany do
+    3 kanałów, trzeba wymusić `.toColourspace('b-w')`. Obie pilnuje `npm test` w `server/`.
+  - Testy: `npm test` w `server/` = selftest offline (maska, ROI, kompozycja — bez sieci i kredytów);
+    `npm run e2e` = pełny przebieg na ŻYWYM deAPI (**pali kredyty**, wymaga działającego `npm start`).
 - **⚠️ PUŁAPKA buildu EAS (powód, czemu 9240 wyszło STUB)**: `.env` jest gitignored → chmura EAS go NIE wysyła, więc
   `EXPO_PUBLIC_*` nie trafiały do AAB. Rozwiązanie: zmienne muszą być w **EAS Environment `production`**
   (`eas env:create --environment production --name EXPO_PUBLIC_API_URL --value <URL> --visibility plaintext`, tak samo
@@ -65,9 +83,9 @@ Realny skeuomorfizm (tekstura, haptyka, tilt) tylko natywnie (Expo Go / dev buil
 - **Google Play**: konto `pietrus914`, EAS `@pietrus914/gallery-ai`, pakiet `com.glue010.galleryai`, `eas.json` (profil
   `production` → AAB). Pierwszy AAB: v0.924 / vc 9240 (AI w trybie STUB — backend jeszcze nie na Railway). Grafiki + opisy
   EN w `store_assets/`. Polityka prywatności = publiczny Google Doc. Ikona launchera: zielony obiektyw (podmiana z placeholdera).
-- **NASTĘPNY KROK**: proxy na Railway ✅, `EXPO_PUBLIC_API_URL` w `.env` + w EAS env `production` ✅, bump 0.925/vc 9241 ✅,
-  testy (tsc + expo-doctor 21/21) ✅, build AAB v0.925/vc 9241 z AI produkcyjnym w toku na EAS.
-  Zostało: pobrać AAB i **wysłać na Google Play** (ew. `eas submit -p android --profile production`).
+- **⚠️ Backend i apka wydają się RAZEM**: kompozycja z maską żyje w `server/`, więc sam AAB jej nie przyniesie.
+  Kolejność: `railway up` z `server/` → dopiero potem publikacja AAB (apka bez świeżego proxy dostanie po prostu
+  starą, nielokalizowaną edycję — nie wywali się, ale bug wróci).
 
 ## Kluczowe decyzje designowe (podjęte)
 - **Tryb wyświetlania ekranu = wybór użytkownika, 3 poziomy** (§11b.1): IMMERSIVE (B&W+fosfor+matryca),

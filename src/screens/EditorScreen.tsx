@@ -448,11 +448,13 @@ export function useImageEditor({
       catch { /* fallback: oryginalny prompt */ }
       finally { setBoosting(false); }
     }
+    // maska (jeśli coś zamalowano) → INPAINTING: prompt zmienia tylko zaznaczenie, reszta zdjęcia zostaje
+    const mask = aiMaskRef.current?.getMask() ?? null;
     setProcessing(true);
     try {
-      const res = await editImage({ uri, prompt });
+      const res = await editImage({ uri, prompt, mask });
       // wynik (zdalny https / data:) sprowadzamy do lokalnego pliku — pod zapis i kolejne edycje
-      if (res?.uri) { setWorkingUri(await ensureLocalFile(res.uri)); addAiTool('TEXT-TO-IMAGE'); setAiPrompt(p); setDraft(''); setView('viewer'); }
+      if (res?.uri) { setWorkingUri(await ensureLocalFile(res.uri)); addAiTool(mask ? 'INPAINT' : 'TEXT-TO-IMAGE'); setAiPrompt(p); setDraft(''); setView('viewer'); }
     } catch (e) {
       setAiError(e instanceof Error ? `ERROR: ${e.message}` : 'EDIT FAILED');
     } finally {
@@ -536,8 +538,14 @@ export function useImageEditor({
         joystick: magicNavJoy,
       };
     } else {
+      // APPLY pojawia się DOPIERO, gdy jest co wysłać (jak w CROP: klawisz wchodzi po pierwszej zmianie).
+      // Wcześniej świecił zawsze, a naciśnięcie bez zaznaczenia nie robiło nic — bez śladu, że trzeba
+      // najpierw zamalować obszar. Liczą się tylko pociągnięcia ADD; sama „gumka" nic nie zaznacza.
       keyboard = {
-        screen: [{ label: 'APPLY', variant: 'primary', onPress: () => magicRef.current?.apply() }, { label: 'BACK', onPress: toViewer }],
+        screen: [
+          magic.hasSelection ? { label: 'APPLY', variant: 'primary', onPress: () => magicRef.current?.apply() } : { label: '' },
+          { label: 'BACK', onPress: toViewer },
+        ],
         metal: [
           { type: 'label', upper: 'UNDO', active: true, onPress: () => magicRef.current?.undo() },
           { type: 'label', upper: 'RESET', variant: 'risk', active: true, onPress: () => magicRef.current?.reset() },
@@ -669,6 +677,7 @@ export function useImageEditor({
                   if (uri) addAiTool(magic.removeBg ? 'REMOVE BG' : 'MAGIC ERASE');
                   else { setAiTools([]); setAiPrompt(null); } // RESET → wyczyść ślad AI
                 }}
+                onError={showToast}
                 onState={setMagic}
               />
             ) : null

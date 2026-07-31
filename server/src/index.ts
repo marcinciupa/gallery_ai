@@ -10,13 +10,21 @@
  * wymaga przebudowy: kontrakt HTTP proxy się nie zmienia.
  *
  * KONTRAKT (zgodny z src/lib/deapi.ts w apce):
- *   POST /api/v1/image-edits        multipart { image, prompt }  → 200 { uri }
- *   POST /api/v1/image-fills        multipart { image }          → 200 { uri }
- *   POST /api/v1/remove-background  multipart { image }          → 200 { uri }   (dedykowany model, np. Ben2)
- *   POST /api/v1/image-erase        multipart { image }          → 200 { uri }
- *   POST /api/v1/prompt-boost       json { prompt }              → 200 { prompt }
+ *   POST /api/v1/image-edits        multipart { image, prompt, mask_paths? } → 200 { uri } | { image_base64, mime }
+ *   POST /api/v1/image-fills        multipart { image }                      → 200 { uri } | { image_base64, mime }
+ *   POST /api/v1/remove-background  multipart { image }                      → 200 { uri }   (dedykowany model, np. Ben2)
+ *   POST /api/v1/image-erase        multipart { image, mask_paths? }         → 200 { uri } | { image_base64, mime }
+ *   POST /api/v1/prompt-boost       json { prompt }                          → 200 { prompt }
  *   Nagłówek X-App-Key (opcjonalny współdzielony sekret) — chroni przed zassaniem kredytów.
  *   POST /webhooks/deapi — odbiornik callbacków deAPI (POZA /api; autoryzacja podpisem HMAC, nie X-App-Key).
+ *
+ * MASKA (inpainting): deAPI NIE MA maskowanego inpaintingu — docs `images/edits` mówią wprost „Inpainting
+ * (`mask` parameter) is not supported", więc model regeneruje CAŁY obraz i edycja rozlewała się daleko poza
+ * zaznaczenie. Rozwiązanie: apka wysyła maskę WEKTOROWO (`mask_paths`, patrz [[mask.ts]]), proxy kadruje
+ * wycinek wokół zaznaczenia, puszcza na nim edycję i SKŁADA wynik z oryginałem przez rozmytą maskę
+ * ([[compose.ts]]). Piksele poza zaznaczeniem zostają nietknięte. Odpowiedź jest wtedy obrazem
+ * (`image_base64` + `mime`), bo proxy oddaje własną kompozycję, a nie URL od deAPI.
+ * BEZ `mask_paths` trasy zachowują się jak dawniej ({ uri }) — starsze, już wydane wersje apki działają dalej.
  *
  * AUTH deAPI: REST v2 (api.deapi.ai) NIE akceptuje prefiksu `dpn-sk-`. OpenAI-compat go wymaga — dlatego
  * DEAPI_API_KEY trzymamy Z prefiksem (kompatybilnie), a tutaj go ODCINAMY na potrzeby v2.
@@ -29,6 +37,13 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import multer from 'multer';
+import sharp from 'sharp';
+import { parseMaskPaths, rasterizeMask, maskBBox, expandRoi, coversWholeImage, type Roi, type MaskPaths } from './mask.js';
+import { BadRequest, ProxyError } from './errors.js';
+import {
+  readImage, maskFromAlpha, softenMask, cropRegion, prefillHoles, upscaleForModel, compositeThroughMask, passthroughJpeg,
+  type Composed, type ImageFacts,
+} from './compose.js';
 
 const {
   DEAPI_API_KEY,
@@ -65,9 +80,19 @@ const PUB_URL = (PUBLIC_URL || (RAILWAY_PUBLIC_DOMAIN ? `https://${RAILWAY_PUBLI
 const WEBHOOKS_ON = Boolean(PUB_URL && DEAPI_WEBHOOK_SECRET); // bez publicznego URL (np. lokalnie) → sam polling
 
 const POLL_INTERVAL_MS = 2500;
-const OVERALL_TIMEOUT_MS = 75_000;    // całkowity budżet proxy (submit + czekanie) — < 90 s timeoutu apki, z zapasem na upload legs
+// Budżet apki na całe żądanie = 90 s. Rozdział: generacja ≤ 60 s + pobranie wyniku ≤ 20 s + kompozycja (~1 s),
+// czyli w najgorszym razie ~81 s — mieści się z zapasem. Wcześniej sama generacja miała 75 s, ale wtedy nic
+// nie działo się po niej; teraz proxy musi jeszcze ściągnąć wynik i go złożyć.
+const OVERALL_TIMEOUT_MS = 60_000;    // całkowity budżet na submit + czekanie na wynik deAPI
 const SUBMIT_TIMEOUT_MS = 30_000;     // górny limit na sam submit (upload obrazu do deAPI v2)
 const POLL_FETCH_TIMEOUT_MS = 10_000; // pojedynczy GET /jobs — krótki, żeby zawieszony poll nie blokował pętli deadline
+const RESULT_FETCH_TIMEOUT_MS = 20_000; // pobranie gotowego obrazu z deAPI (potrzebne tylko przy kompozycji)
+const MAX_RESULT_BYTES = 40 * 1024 * 1024; // sanity na pobierany wynik (obraz, nie film)
+
+// sharp: bez cache'a i na jednym wątku — kontener Railway ma mało RAM/rdzeni, a obrazy są małe (≤1536 px),
+// więc pula wątków libvips dawała tylko narzut i skoki pamięci.
+sharp.cache(false);
+sharp.concurrency(1);
 
 const app = express();
 app.disable('x-powered-by');
@@ -134,7 +159,7 @@ app.use('/api', (req, res, next) => {
 });
 
 app.get('/health', (_req, res) =>
-  res.json({ ok: true, editModel: DEAPI_MODEL, bgModel: DEAPI_BG_MODEL, upscaleModel: DEAPI_UPSCALE_MODEL, steps: EDIT_STEPS, webhooks: WEBHOOKS_ON }));
+  res.json({ ok: true, editModel: DEAPI_MODEL, bgModel: DEAPI_BG_MODEL, upscaleModel: DEAPI_UPSCALE_MODEL, steps: EDIT_STEPS, webhooks: WEBHOOKS_ON, masking: true }));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // deAPI v2 — submit + oczekiwanie na wynik (webhook lub polling)
@@ -217,11 +242,91 @@ function runEdit(image: Buffer, prompt: string): Promise<string> {
   return runJob('edits', image, { prompt, model: DEAPI_MODEL, steps: String(EDIT_STEPS), seed });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// KOMPOZYCJA Z MASKĄ — lokalizuje edycję do zaznaczonego obszaru (patrz nagłówek pliku)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Model generuje wyraźnie lepiej, gdy wycinek nie jest miniaturką — mały ROI podbijamy przed wysyłką. */
+const MODEL_TARGET_SIDE = 768;
+
+/** Rozmycie szwu, skalowane do wielkości zaznaczenia: małe zaznaczenie = wąskie przejście, duże = szersze. */
+const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
+const paintedFeather = (bbox: Roi) => clamp(0.05 * Math.min(bbox.width, bbox.height), 2, 16);
+const alphaFeather = (facts: ImageFacts) => clamp(0.004 * Math.min(facts.width, facts.height), 2, 8);
+
+/** Pobiera gotowy obraz z deAPI (podpisany URL). Potrzebne tylko przy kompozycji — inaczej URL leci do apki. */
+async function downloadResult(url: string): Promise<Buffer> {
+  const r = await fetch(url, { signal: AbortSignal.timeout(RESULT_FETCH_TIMEOUT_MS) });
+  if (!r.ok) throw Object.assign(new Error(`pobranie wyniku ${r.status}`), { status: 502 });
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (buf.length > MAX_RESULT_BYTES) throw Object.assign(new Error('wynik deAPI za duży'), { status: 502 });
+  return buf;
+}
+
+/**
+ * Pełna ścieżka „edycja tylko w masce": wycinek wokół zaznaczenia → edycja w deAPI → wklejenie wyniku
+ * w oryginał przez rozmytą maskę.
+ *
+ * Dlaczego ROI (kadr wokół zaznaczenia), a nie całe zdjęcie: model dostaje wtedy więcej pikseli na
+ * istotnym fragmencie, a jego naturalne „rozlewanie się" i tak nie ma gdzie wyjść poza wycinek.
+ *
+ * Zmiękczona maska MUSI mieścić się w wycinku, inaczej gradient szwu urwałby się na krawędzi ROI
+ * i zostałby widoczny prostokąt. Zasięg zmiękczenia to ≈5.2·σ (dilate + feather), a margines ROI to
+ * max(48 px, 0.35·dłuższy bok). Przy σ = 0.05·krótszy bok (przycięte do 2…16) zasięg ≤ 0.26·krótszy
+ * bok < margines — w obie strony, także po przycięciu σ. Pilnuje tego selftest („zmiękczona maska ⊂ ROI").
+ */
+async function maskedEdit(
+  image: Buffer, facts: ImageFacts, mask: Buffer, prompt: string, sigma: number,
+  prepare?: (crop: Buffer, roi: Roi) => Promise<Buffer>, // np. zalepienie dziur przed wysyłką (FILL)
+): Promise<Composed> {
+  const bbox = maskBBox(mask, facts.width, facts.height);
+  if (!bbox) throw new BadRequest('empty selection — nothing to edit');
+
+  const full: Roi = { left: 0, top: 0, width: facts.width, height: facts.height };
+  const expanded = expandRoi(bbox, facts.width, facts.height);
+  const roi = coversWholeImage(expanded, facts.width, facts.height) ? full : expanded;
+
+  const soft = await softenMask(mask, facts.width, facts.height, sigma);
+  const crop = await cropRegion(image, roi);
+  const ready = prepare ? await prepare(crop, roi) : crop;
+  const edited = await downloadResult(await runEdit(await upscaleForModel(ready, roi, MODEL_TARGET_SIDE), prompt));
+  return compositeThroughMask(image, edited, soft, facts, roi);
+}
+
+/**
+ * Odróżnia „apka NIE przysłała maski" (starsze wydanie → dawne zachowanie) od „przysłała, ale zepsutą".
+ * To drugie musi być głośnym 400: ciche potraktowanie go jak braku maski oznaczałoby powrót do edycji
+ * CAŁEGO obrazu, czyli dokładnie do buga, który maska naprawia — tylko że niewidocznie.
+ */
+function readMask(raw: unknown): MaskPaths | null {
+  const parsed = parseMaskPaths(raw);
+  if (!parsed && typeof raw === 'string' && raw.trim()) throw new BadRequest('malformed "mask_paths"');
+  return parsed;
+}
+
+/** Wariant dla maski malowanej palcem (JSON z apki): rasteryzacja → [[maskedEdit]]. */
+async function maskedEditFromPaths(image: Buffer, paths: NonNullable<ReturnType<typeof parseMaskPaths>>, prompt: string): Promise<Composed> {
+  const facts = await readImage(image);
+  const mask = rasterizeMask(paths, facts.width, facts.height);
+  const bbox = maskBBox(mask, facts.width, facts.height);
+  if (!bbox) throw new BadRequest('empty selection — nothing to edit');
+  return maskedEdit(image, facts, mask, prompt, paintedFeather(bbox));
+}
+
+/** Odpowiedź apce: gotowy obraz (kompozycja proxy) zamiast URL-a deAPI. */
+const imageBody = (c: Composed) => ({ image_base64: c.buffer.toString('base64'), mime: c.mime });
+
 /** Błąd wywołania deAPI → apce oddajemy 502 (lub 504 timeout) z ogólnym komunikatem; detal tylko do logów. */
 function sendUpstreamError(res: express.Response, e: unknown, where: string) {
   const err = e as { status?: number; message?: string };
   const status = err?.status;
   console.error(`[${where}] upstream ${status ?? '?'}:`, err?.message ?? e);
+
+  // Wina ŻĄDANIA (puste/za ciężkie zaznaczenie, nieczytelny lub za duży obraz) — komunikat jest nasz
+  // i bezpieczny do pokazania; ponawianie nic nie da, więc NIE udawaj przejściowej awarii deAPI.
+  if (e instanceof BadRequest) return res.status(400).json({ error: e.message });
+  // Naruszona asercja wewnętrzna proxy — też nie jest winą deAPI. Szczegóły zostają w logu (wyżej).
+  if (e instanceof ProxyError) return res.status(500).json({ error: 'image processing failed' });
 
   // 422 = deAPI ODRZUCIŁO wejście (najczęściej rozdzielczość poza limitem modelu, np. bok < 256 lub skrajne
   // proporcje panoramy). Błąd NIEPRZEJŚCIOWY — ponawianie nic nie da. Nie maskujemy go jako 502 „upstream
@@ -234,28 +339,61 @@ function sendUpstreamError(res: express.Response, e: unknown, where: string) {
   res.status(code).json({ error: code === 504 ? `${where} timed out` : `${where} failed (upstream)` });
 }
 
-// EDYCJA PROMPTEM — obraz + instrukcja użytkownika (EN).
+// EDYCJA PROMPTEM — obraz + instrukcja użytkownika (EN). Z `mask_paths` = INPAINTING (zmiana tylko
+// w zamalowanym obszarze); bez maski = edycja całego obrazu (i tak zachowanie starszych wydań apki).
+// Sufiks o kompozycji pomaga modelowi trzymać kadr wycinka, żeby szew z oryginałem był niewidoczny.
+const inpaintPrompt = (p: string) => `${p}. Keep the framing, lighting, colour and perspective of the photo unchanged.`;
+
 app.post('/api/v1/image-edits', upload.single('image'), async (req, res) => {
   const prompt = String(req.body?.prompt ?? '').trim();
   if (!req.file) return res.status(400).json({ error: 'missing "image" file' });
   if (!prompt) return res.status(400).json({ error: 'missing "prompt" field' });
   try {
-    res.json({ uri: await runEdit(req.file.buffer, prompt) });
+    const paths = readMask(req.body?.mask_paths);
+    if (!paths) return res.json({ uri: await runEdit(req.file.buffer, prompt) });
+    res.json(imageBody(await maskedEditFromPaths(req.file.buffer, paths, inpaintPrompt(prompt))));
   } catch (e) {
     sendUpstreamError(res, e, 'image-edits');
   }
 });
 
-// GENERATIVE FILL — wypełnia puste/przezroczyste obszary (np. rogi po obrocie). deAPI nie ma maskowanego
-// inpaintingu, więc używamy edycji z promptem opisującym domalowanie krawędzi.
+// GENERATIVE FILL — wypełnia puste/przezroczyste obszary (np. rogi po obrocie kadru). Maski nie musi
+// przysyłać apka: obszarem do domalowania są DOKŁADNIE piksele przezroczyste, więc czytamy ją z alfy.
+// Kompozycja przez tę maskę pilnuje, żeby model przemalował rogi, a nie całe zdjęcie.
+//
+// ⚠️ WYMAGA JAWNEJ ZGODY KLIENTA (`mask_from_alpha=1`). Ta trasa nie ma pola `mask_paths`, po którym
+// dałoby się poznać nową apkę, a WYDANE wydanie (v0.9625) ignoruje `mime` w odpowiedzi i zapisuje bajty
+// JPEG-a do pliku `.png` (MediaStore dostaje wtedy zły typ przy zapisie do galerii). Bez flagi zostaje
+// więc dawne zachowanie: edycja całości i `{ uri }`.
+//
+// Prompt opisuje to, CO MODEL REALNIE WIDZI: nie przezroczystość (deAPI spłaszcza ją do czerni), tylko
+// nasze wstępne zalepienie — rozmytą, rozciągniętą smugę przy krawędzi, którą ma domalować „na ostro".
 const FILL_PROMPT =
+  'The blurred, smeared area near the border is a rough placeholder. Repaint it so it seamlessly continues the ' +
+  'surrounding photo with matching detail, texture, colour, lighting and perspective. ' +
+  'Keep the original subject and composition untouched.';
+
+// Wersja dla starszych apek: model dostaje obraz z (spłaszczoną do czerni) dziurą, bez zalepiania.
+const FILL_PROMPT_LEGACY =
   'Seamlessly fill the empty or transparent border areas by naturally extending the surrounding photo content. ' +
   'Keep the original subject and composition untouched. Match lighting, texture, color and perspective for a coherent result.';
 
 app.post('/api/v1/image-fills', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'missing "image" file' });
+  const image = req.file.buffer;
+  const wantsAlphaMask = String(req.body?.mask_from_alpha ?? '') === '1';
   try {
-    res.json({ uri: await runEdit(req.file.buffer, FILL_PROMPT) });
+    if (!wantsAlphaMask) return res.json({ uri: await runEdit(image, FILL_PROMPT_LEGACY) });
+    const facts = await readImage(image);
+    // brak alfy → nie ma czego maskować (obraz bez dziur)
+    if (!facts.hasAlpha) return res.json({ uri: await runEdit(image, FILL_PROMPT_LEGACY) });
+    const mask = await maskFromAlpha(image, facts.width, facts.height);
+    // alfa jest, ale w pełni kryjąca → nie ma dziur do wypełnienia. Oddaj obraz bez zmian: edycja całości
+    // przemalowałaby zdjęcie bez powodu (i za kredyty), a to jest dokładnie ten bug, który tu naprawiamy.
+    if (!maskBBox(mask, facts.width, facts.height)) return res.json(imageBody(await passthroughJpeg(image)));
+    const sigma = alphaFeather(facts);
+    const composed = await maskedEdit(image, facts, mask, FILL_PROMPT, sigma, (crop, roi) => prefillHoles(crop, roi.width, roi.height, sigma));
+    res.json(imageBody(composed));
   } catch (e) {
     sendUpstreamError(res, e, 'image-fills');
   }
@@ -281,16 +419,19 @@ app.post('/api/v1/upscale', upload.single('image'), async (req, res) => {
   }
 });
 
-// MAGIC ERASE — usuwa niechciane obiekty i naturalnie domalowuje tło. UWAGA: apka na razie NIE wysyła maski
-// (obszaru zaznaczenia), więc erase jest ogólne. Gdy dojdzie maska, tu podłączymy inpaint z maską.
+// MAGIC ERASE — usuwa zamalowany obiekt i domalowuje tło. Z `mask_paths` edycja jest zawężona do
+// zaznaczenia (kadr wokół niego + kompozycja); bez maski leci dawna, ogólna wersja — tak działają
+// wydania apki sprzed maski i nie chcemy im psuć funkcji.
 const ERASE_PROMPT =
-  'Remove any unwanted foreground objects, people or distracting elements and seamlessly fill the area by ' +
+  'Remove the main unwanted object, person or distracting element in this crop and seamlessly fill the area by ' +
   'naturally extending the surrounding background. Keep the rest of the photo untouched, matching lighting, texture and perspective.';
 
 app.post('/api/v1/image-erase', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'missing "image" file' });
   try {
-    res.json({ uri: await runEdit(req.file.buffer, ERASE_PROMPT) });
+    const paths = readMask(req.body?.mask_paths);
+    if (!paths) return res.json({ uri: await runEdit(req.file.buffer, ERASE_PROMPT) });
+    res.json(imageBody(await maskedEditFromPaths(req.file.buffer, paths, ERASE_PROMPT)));
   } catch (e) {
     sendUpstreamError(res, e, 'image-erase');
   }

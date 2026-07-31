@@ -31,52 +31,73 @@ export class ApiError extends Error {
 
 export type ImageEditResult = { uri: string };
 
+/**
+ * MASKA INPAINTINGU — pociągnięcia pędzla w współrzędnych ZNORMALIZOWANYCH (0…1 względem pola obrazu);
+ * `size` = szerokość pędzla znormalizowana do SZEROKOŚCI pola. Wysyłamy wektor, nie PNG: kilka kB zamiast
+ * setek, bez rasteryzacji na telefonie, a backend i tak rasteryzuje ją w rozdzielczości realnego zdjęcia.
+ * Bez maski model deAPI regeneruje CAŁY obraz (nie ma maskowanego inpaintingu) i edycja wychodzi daleko
+ * poza zaznaczenie — maska + kompozycja po stronie proxy to jedyne, co ją lokalizuje.
+ */
+export type MaskStroke = { add: boolean; size: number; pts: [number, number][] };
+export type MaskPaths = { strokes: MaskStroke[] };
+
+/** Serializacja maski do pola multipart. 4 miejsca po przecinku = ~0.15 px na zdjęciu 1536 px (dość). */
+function maskField(mask?: MaskPaths | null): Record<string, string> {
+  if (!mask?.strokes.length) return {};
+  const r = (n: number) => Math.round(n * 1e4) / 1e4;
+  const strokes = mask.strokes.map((s) => ({ add: s.add, size: r(s.size), pts: s.pts.map(([x, y]) => [r(x), r(y)]) }));
+  return { mask_paths: JSON.stringify({ strokes }) };
+}
+
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Czy edycja AI woła realny backend (env ustawione), czy działa na stubie. */
 export const AI_STUB = !BASE;
 
 /**
- * Edytuje obraz promptem. `uri` = lokalny URI zdjęcia (asset/plik), `prompt` = instrukcja edycji.
- * Zwraca URI wyniku (do wyświetlenia w <Image>). Rzuca `ApiError` przy błędzie backendu.
+ * Edytuje obraz promptem. `uri` = lokalny URI zdjęcia (asset/plik), `prompt` = instrukcja edycji,
+ * `mask` (opcjonalnie) = zamalowany obszar → INPAINTING: zmiana zostaje w zaznaczeniu, reszta pikseli
+ * pochodzi z oryginału. Zwraca URI wyniku. Rzuca `ApiError` przy błędzie backendu.
  */
-export async function editImage({ uri, prompt }: { uri: string; prompt: string }): Promise<ImageEditResult> {
+export async function editImage({ uri, prompt, mask }: { uri: string; prompt: string; mask?: MaskPaths | null }): Promise<ImageEditResult> {
   if (AI_STUB) {
     // STUB — echo wejściowego obrazu (podmień na realny wynik po podłączeniu proxy deAPI/z-image)
     await sleep(1400);
     return { uri };
   }
 
-  // REALNY proxy: multipart (obraz + prompt) → backend forwarduje do deAPI i zwraca wynik.
-  // Model wybiera backend (np. z-image albo Qwen Edit Plus — oba dostępne w deAPI).
+  // REALNY proxy: multipart (obraz + prompt [+ maska]) → backend forwarduje do deAPI i zwraca wynik.
   // Cap 1536: Flux (model edycji) odrzuca wejście > 1536 px (422) — bez capa edycja realnych zdjęć padała.
-  return postImage('/api/v1/image-edits', uri, { prompt }, undefined, AI_MAX_DIM);
+  return postImage('/api/v1/image-edits', uri, { prompt, ...maskField(mask) }, AI_MAX_DIM);
 }
 
 /**
- * Generative fill — wypełnia PRZEZROCZYSTE/puste obszary obrazu (np. czarne rogi po kadrze z obrotem).
- * `uri` = obraz PNG, w którym obszary do domalowania są przezroczyste (kanał alfa = maska inpaintingu).
- * STUB: zwraca wejściowy obraz. Realnie: proxy → deAPI (z-image inpaint/outpaint).
+ * Generative fill — wypełnia PRZEZROCZYSTE/puste obszary obrazu (np. rogi po kadrze z obrotem).
+ * `uri` = obraz PNG, w którym obszary do domalowania są przezroczyste. Maski nie wysyłamy: backend
+ * odczyta ją wprost z kanału alfa i po edycji złoży wynik tak, by przemalowane zostały TYLKO dziury.
+ * STUB: zwraca wejściowy obraz.
  */
 export async function fillImage({ uri }: { uri: string }): Promise<ImageEditResult> {
   if (AI_STUB) {
     await sleep(1400);
     return { uri };
   }
-  return postImage('/api/v1/image-fills', uri, {}, undefined, AI_MAX_DIM); // Flux (edycja) → cap 1536, inaczej 422
+  // `mask_from_alpha` = zgoda na nowy kontrakt tej trasy (maska z alfy + kompozycja + odpowiedź obrazem).
+  // Bez tej flagi proxy zachowuje się jak dla starszych wydań apki, które nie umiały odczytać `mime`.
+  return postImage('/api/v1/image-fills', uri, { mask_from_alpha: '1' }, AI_MAX_DIM); // Flux (edycja) → cap 1536, inaczej 422
 }
 
 /**
- * Magic Erase — usuwa zaznaczony (namalowany palcem) obszar i domalowuje tło (inpaint).
- * `uri` = obraz, `mask` = URI maski (biała = do usunięcia) — na razie opcjonalny (STUB nie potrzebuje maski).
- * STUB: echo wejścia. Realnie: proxy → deAPI (inpaint z maską).
+ * Magic Erase — usuwa zamalowany palcem obszar i domalowuje tło (inpaint).
+ * `mask` = pociągnięcia pędzla; bez niej backend usuwa „cokolwiek niechcianego" z całego zdjęcia.
+ * STUB: echo wejścia.
  */
-export async function eraseImage({ uri, mask }: { uri: string; mask?: string }): Promise<ImageEditResult> {
+export async function eraseImage({ uri, mask }: { uri: string; mask?: MaskPaths | null }): Promise<ImageEditResult> {
   if (AI_STUB) {
     await sleep(1400);
     return { uri };
   }
-  return postImage('/api/v1/image-erase', uri, {}, mask ? { mask } : undefined, AI_MAX_DIM); // Flux (edycja) → cap 1536
+  return postImage('/api/v1/image-erase', uri, maskField(mask), AI_MAX_DIM); // Flux (edycja) → cap 1536
 }
 
 /**
@@ -89,7 +110,7 @@ export async function removeBackground({ uri }: { uri: string }): Promise<ImageE
     return { uri };
   }
   // Model tła (Ben2) też ma limit rozdzielczości wejścia (duże zdjęcia z telefonu dostają 422) → cap.
-  return postImage('/api/v1/remove-background', uri, {}, undefined, AI_MAX_DIM);
+  return postImage('/api/v1/remove-background', uri, {}, AI_MAX_DIM);
 }
 
 /**
@@ -103,7 +124,7 @@ export async function upscaleImage({ uri }: { uri: string }): Promise<ImageEditR
   }
   // deAPI upscale (x4) ma limit rozdzielczości wejścia — duże zdjęcia z telefonu (np. 2000×2800) dostają 422.
   // Cap dłuższego boku (wyjście x4 = do 6144 px, aż nadto). Bez tego upscale realnych zdjęć padał.
-  return postImage('/api/v1/upscale', uri, {}, undefined, AI_MAX_DIM);
+  return postImage('/api/v1/upscale', uri, {}, AI_MAX_DIM);
 }
 
 export type PromptBoostResult = { prompt: string };
@@ -151,7 +172,11 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-/** Wspólny parser odpowiedzi proxy (status + surowe body); kontrakt: 2xx { uri?; image_base64? }. */
+/**
+ * Wspólny parser odpowiedzi proxy (status + surowe body); kontrakt: 2xx { uri } albo { image_base64, mime }.
+ * `image_base64` przychodzi z tras, gdzie proxy SAMO składa obraz (kompozycja z maską) — nie ma wtedy URL-a
+ * deAPI do oddania. `mime` musi trafić do data-URI, bo od niego zależy rozszerzenie zapisywanego pliku.
+ */
 function parseResult(path: string, status: number, body: string): ImageEditResult {
   if (status < 200 || status >= 300) {
     // backend zwraca JSON { error }, ale bądźmy odporni na nie-JSON (np. HTML z proxy pośredniego)
@@ -159,20 +184,19 @@ function parseResult(path: string, status: number, body: string): ImageEditResul
     try { const j = JSON.parse(body); if (j?.error) msg = String(j.error); } catch {}
     throw new ApiError(status, msg);
   }
-  let json: { uri?: string; image_base64?: string };
+  let json: { uri?: string; image_base64?: string; mime?: string };
   try { json = JSON.parse(body); } catch { throw new ApiError(0, `${path}: malformed response`); }
   if (json.uri) return { uri: json.uri };
-  if (json.image_base64) return { uri: `data:image/png;base64,${json.image_base64}` };
+  if (json.image_base64) return { uri: `data:${json.mime || 'image/png'};base64,${json.image_base64}` };
   throw new ApiError(0, `${path}: empty response`);
 }
 
-/** Wspólne wysłanie obrazu (+pola, +opcjonalne dodatkowe obrazy np. maska) do proxy; kontrakt: 2xx { uri?; image_base64? }. */
+/** Wspólne wysłanie obrazu (+pola tekstowe) do proxy; kontrakt: 2xx { uri } albo { image_base64, mime }. */
 async function postImage(
   path: string,
   uri: string,
   fields: Record<string, string> = {},
-  extraImages?: Record<string, string>,
-  maxDim?: number, // cap dłuższego boku (px) — dla upscalu, który ma limit rozdzielczości wejścia
+  maxDim?: number, // cap dłuższego boku (px) — modele deAPI mają limit rozdzielczości wejścia
 ): Promise<ImageEditResult> {
   // zdalny wynik (https/data) najpierw sprowadzamy do lokalnego pliku (inaczej łańcuchowa edycja wysyłałaby
   // pusty obraz), a potem WYPALAMY orientację EXIF w piksele (+ ewentualny cap rozdzielczości) — backend
@@ -181,21 +205,13 @@ async function postImage(
   const url = `${BASE}${path}`;
 
   // WEB: brak natywnego uploadAsync — użyj fetch+FormData (web to tylko podgląd UI, nie ścieżka produkcyjna AI).
-  if (Platform.OS === 'web') return postImageWeb(url, path, localUri, fields, extraImages);
+  if (Platform.OS === 'web') return postImageWeb(url, path, localUri, fields);
 
-  // NATYWNIE: FileSystem.uploadAsync streamuje JEDEN plik multipart NATYWNIE (Android/iOS), z pominięciem
+  // NATYWNIE: FileSystem.uploadAsync streamuje plik multipart NATYWNIE (Android/iOS), z pominięciem
   // globalnego fetch. KLUCZOWE: w Expo SDK 56 globalny `fetch` = winter-fetch, którego enkoder multipart
   // NIE obsługuje FormData part typu { uri, name, type } — rzuca „Unsupported FormDataPart implementation".
-  // uploadAsync to omija i nie wymaga wczytywania obrazu do JS (bez base64 w pamięci).
-  //
-  // uploadAsync wysyła tylko JEDEN plik binarny → ewentualne dodatkowe obrazy (np. maska) dokładamy jako
-  // pola tekstowe base64 (`<klucz>_base64`), które backend odczyta z req.body. Prymarny obraz leci jako plik.
-  const parameters = { ...fields };
-  for (const [key, imgUri] of Object.entries(extraImages ?? {})) {
-    const localExtra = await ensureLocalFile(imgUri);
-    parameters[`${key}_base64`] = await FileSystem.readAsStringAsync(localExtra, { encoding: FileSystem.EncodingType.Base64 });
-  }
-
+  // uploadAsync to omija i nie wymaga wczytywania obrazu do JS (bez base64 w pamięci). Maska jedzie
+  // jako zwykłe pole tekstowe (`parameters`), bo jest wektorem, a nie plikiem.
   try {
     const res = await withTimeout(
       FileSystem.uploadAsync(url, localUri, {
@@ -203,7 +219,7 @@ async function postImage(
         uploadType: FileSystem.FileSystemUploadType.MULTIPART,
         fieldName: 'image',
         mimeType: 'image/png',
-        parameters,
+        parameters: fields,
         headers: { ...appKeyHeader },
       }),
       TIMEOUT_MS,
@@ -221,12 +237,10 @@ async function postImageWeb(
   path: string,
   localUri: string,
   fields: Record<string, string>,
-  extraImages?: Record<string, string>,
 ): Promise<ImageEditResult> {
   const form = new FormData();
   for (const [k, v] of Object.entries(fields)) form.append(k, v);
   form.append('image', { uri: localUri, name: 'image.png', type: 'image/png' } as any);
-  for (const [k, v] of Object.entries(extraImages ?? {})) form.append(k, { uri: v, name: `${k}.png`, type: 'image/png' } as any);
   try {
     const res = await withTimeout(
       fetch(url, { method: 'POST', headers: { ...appKeyHeader }, body: form }),

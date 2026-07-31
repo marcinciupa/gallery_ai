@@ -6,7 +6,10 @@
   "description": "Cienki backend-proxy: apka gallery_ai ⇄ deAPI (OpenAI-compatible). Trzyma klucz deAPI po stronie serwera.",
   "scripts": {
     "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx src/selftest.ts",
+    "e2e": "tsx src/e2e.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -14,6 +17,7 @@
     "express": "^4.21.2",
     "helmet": "^8.0.0",
     "multer": "^2.2.0",
+    "sharp": "^0.34.5",
     "tsx": "^4.19.2"
   },
   "devDependencies": {
