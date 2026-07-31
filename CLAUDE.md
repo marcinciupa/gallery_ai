@@ -84,8 +84,11 @@ Realny skeuomorfizm (tekstura, haptyka, tilt) tylko natywnie (Expo Go / dev buil
   `production` → AAB). Pierwszy AAB: v0.924 / vc 9240 (AI w trybie STUB — backend jeszcze nie na Railway). Grafiki + opisy
   EN w `store_assets/`. Polityka prywatności = publiczny Google Doc. Ikona launchera: zielony obiektyw (podmiana z placeholdera).
 - **⚠️ Backend i apka wydają się RAZEM**: kompozycja z maską żyje w `server/`, więc sam AAB jej nie przyniesie.
-  Kolejność: `railway up` z `server/` → dopiero potem publikacja AAB (apka bez świeżego proxy dostanie po prostu
-  starą, nielokalizowaną edycję — nie wywali się, ale bug wróci).
+  Kolejność: `railway up --service gallery-ai-backend` z `server/` → dopiero potem publikacja AAB (apka bez
+  świeżego proxy dostanie po prostu starą, nielokalizowaną edycję — nie wywali się, ale bug wróci).
+- **STAN 2026-07-31 (v0.963 / vc 9630)**: backend z maską WDROŻONY na Railway i sprawdzony e2e po produkcyjnym
+  URL-u (`/health` → `masking: true, webhooks: true`; trasy 9–17 s, mieszczą się w 90 s limitu apki). AAB
+  zbudowany na EAS. **Zostało: wysłać AAB na Google Play** + wkleić „What's new" ze `store_assets/release_notes_en.md`.
 
 ## Kluczowe decyzje designowe (podjęte)
 - **Tryb wyświetlania ekranu = wybór użytkownika, 3 poziomy** (§11b.1): IMMERSIVE (B&W+fosfor+matryca),
