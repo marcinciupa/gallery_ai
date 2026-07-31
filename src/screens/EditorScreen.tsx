@@ -21,7 +21,7 @@ import { AiStage, AiStageHandle } from './AiStage';
 import { editImage, fillImage, boostPrompt, upscaleImage } from '../lib/deapi';
 import { saveImageToLibrary } from '../lib/saveImage';
 import { getProvenance, getFileBytes, isAiSource, type Provenance, type SourceType } from '../lib/imageMeta';
-import { ensureLocalFile } from '../lib/localFile';
+import { ensureLocalFile, persistWorkFile } from '../lib/localFile';
 
 const phosphorGlow = {
   textShadowColor: textShadow.phosphor.color,
@@ -389,7 +389,8 @@ export function useImageEditor({
   // Jeśli kadr zostawił puste obszary (obrót) → zaproponuj wypełnienie AI w podglądzie.
   const applyCrop = async () => {
     const res = await cropRef.current?.apply();
-    if (res?.uri) { setWorkingUri(res.uri); setFillOffer(res.needsFill); }
+    // wynik manipulatora leży w jego cache'u → przenieś do katalogu roboczego, żeby dożył do SAVE
+    if (res?.uri) { setWorkingUri(await persistWorkFile(res.uri)); setFillOffer(res.needsFill); }
     setView('viewer');
   };
 

@@ -3,7 +3,7 @@
 Google Play limit: **500 characters per language**. Paste the block below into
 Play Console → testing track → "What's new in this release" (en-US).
 
-## 0.963 (versionCode 9630) — Play block
+## 0.9635 (versionCode 9635) — Play block
 
 > Covers everything since 0.958. If 0.959–0.9625 already went out on this track,
 > drop the last paragraph — it repeats what those releases delivered.
@@ -16,7 +16,7 @@ Generative Fill no longer leaves a black corner after straightening a photo.
 Also new: icons on every key, place names and AI/RAW badges in Moments, and the app is now Gallery+.
 ```
 
-## 0.963 — full changelog
+## 0.9635 — full changelog
 
 **Fixed — the big one**
 
@@ -33,6 +33,11 @@ Also new: icons on every key, place names and AI/RAW badges in Moments, and the 
 - **Selecting with the eraser only no longer starts an edit.** If every brush stroke was
   "remove from select", there is nothing selected — APPLY stays inactive instead of quietly editing
   the whole photo.
+- **Edits can no longer be lost before you save them.** Work-in-progress edits were held in the
+  system cache, which Android is free to wipe at any moment — on a nearly full phone an edit could
+  vanish between finishing it and pressing SAVE, and saving then failed. They now live in the app's
+  own storage and are cleaned up after a day.
+- **Magic Erase tells you when something goes wrong** instead of just stopping.
 - Version number shown in Settings was stale (0.930); it now matches the installed build.
 
 **Changed**
