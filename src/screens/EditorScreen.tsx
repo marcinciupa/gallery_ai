@@ -65,6 +65,23 @@ export function formatLabel(filename?: string | null, raw?: boolean): string | n
   return raw ? `.${ext} (RAW)` : ext.toUpperCase();
 }
 
+/**
+ * Nazwa pliku pod obrazem. Limit 40 znaków dobrany pod PEŁNĄ szerokość treści — nazwa nie siedzi już w
+ * ciasnym górnym pasku, więc typowe `IMG_20260803_073104.jpg` (23 znaki) mieści się w całości i nic nie jest
+ * skracane. Dopiero naprawdę długie nazwy tracą ŚRODEK (prefix + „~" + 3 ostatnie znaki bazy + rozszerzenie),
+ * bo rozszerzenie i końcówka niosą więcej informacji niż sam początek.
+ */
+export function truncName(name?: string | null, max = 40): string {
+  if (!name) return '';
+  if (name.length <= max) return name;
+  const dot = name.lastIndexOf('.');
+  const ext = dot > 0 ? name.slice(dot) : '';
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const tail = base.slice(-3);
+  const budget = Math.max(1, max - 1 - tail.length - ext.length);
+  return `${base.slice(0, budget)}~${tail}${ext}`;
+}
+
 // Dane panelu INFO — wyliczone raz w useImageEditor, współdzielone z podglądem w ramce ORAZ z immersive (ten sam panel).
 export type ImageInfo = {
   open: boolean;
@@ -109,10 +126,12 @@ export function InfoPanel({ dims, fileSize, format, aiTools, aiPrompt, aiUpscale
 
 /**
  * Pinch-zoom podglądu (1×–6×), 1 palcem przesuwanie gdy powiększone; puszczenie poniżej 1× wraca do
- * dopasowania. Gesty na PanResponderze (brak gesture-handlera w projekcie). Remount przez `key` (PREV/NEXT)
- * zeruje zoom. Renderowany W POLU TREŚCI (nie fullscreen) — pasek statusu nad nim zostaje widoczny.
+ * dopasowania. Przy 100% poziomy gest przesuwa obraz za palcem i zmienia zdjęcie (droga LUB flick).
+ * Gesty na PanResponderze (brak gesture-handlera w projekcie). Zmiana zdjęcia NIE remountuje komponentu
+ * (to przeładowywało obraz przy każdym swipie) — zoom zeruje efekt na `source`.
+ * Renderowany W POLU TREŚCI (nie fullscreen) — pasek statusu nad nim zostaje widoczny.
  */
-function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims, onImmersive, onExit }: { source: ImageSourcePropType; onPrev?: () => void; onNext?: () => void; onSwipeUp?: () => void; onSwipeDown?: () => void; onDims?: (w: number, h: number) => void; onImmersive?: () => void; onExit?: () => void }) {
+function ZoomImage({ source, prevSource, nextSource, onPrev, onNext, onSwipeUp, onSwipeDown, onDims, onImmersive, onExit }: { source: ImageSourcePropType; prevSource?: ImageSourcePropType; nextSource?: ImageSourcePropType; onPrev?: () => void; onNext?: () => void; onSwipeUp?: () => void; onSwipeDown?: () => void; onDims?: (w: number, h: number) => void; onImmersive?: () => void; onExit?: () => void }) {
   const immersedRef = useRef(false); // gest ZUŻYTY (pinch-out → immersive, pinch-in → wyjście) — jednorazowo na gest
   const initRatio = useMemo(() => {
     // Wymiary z METADANYCH źródła (mediaWidth/mediaHeight) — znane OD RAZU, więc dopasowanie jest poprawne
@@ -124,15 +143,48 @@ function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims, onI
   }, [source]);
   const [ratio, setRatio] = useState(initRatio); // szer/wys
   const [box, setBox] = useState({ w: 0, h: 0 });
-
   const scale = useRef(new Animated.Value(1)).current;
   const tx = useRef(new Animated.Value(0)).current;
   const ty = useRef(new Animated.Value(0)).current;
+  // PAGER jak w IMMERSIVE: trzy sloty [prev · current · next] obok siebie, przesuwane jednym translateX.
+  // Wcześniej jechał sam obraz i po puszczeniu wracał sprężyną — stąd „efekt procy". Tu gest przesuwa CAŁY
+  // pasek, a zmiana zdjęcia to dojechanie do sąsiada; po podmianie źródła pasek wraca na 0 bez mrugnięcia.
+  const pageX = useRef(new Animated.Value(0)).current;
+  const paging = useRef(false); // trwa animacja dojazdu → ignoruj kolejne gesty
   const cur = useRef({ s: 1, x: 0, y: 0 });
   const base = useRef({ s: 1, x: 0, y: 0 });
   const pinch = useRef<{ d0: number; s0: number } | null>(null);
   const didPinch = useRef(false); // czy w geście były 2 palce → to nie swipe zmiany zdjęcia
-  const SWIPE = 60;               // próg poziomego swipe (px) do przełączenia zdjęcia (przy braku zoomu)
+  const dragging = useRef(false); // trwa poziomy swipe przy 100% (obraz podąża za palcem)
+  const SWIPE_V = 60;             // próg PIONOWEGO swipe (px): góra = INFO, dół = schowaj INFO
+  // Próg POZIOMY: ułamek szerokości pola (nie sztywne 60 px) + próg PRĘDKOŚCI. Wcześniej trzeba było
+  // przeciągnąć 60 px BEZ ŻADNEJ reakcji obrazu, więc krótki, szybki gest nie robił nic i swipe wydawał się
+  // „ciężki". Teraz obraz jedzie za palcem, a przełącza go albo droga, albo sam flick.
+  const boxRef = useRef({ w: 0, h: 0 });
+  const swipeTh = () => Math.max(24, boxRef.current.w * 0.12);
+  const FLING = 0.3;              // px/ms — szybki ruch przełącza mimo krótkiej drogi
+
+  // Zmiana ZDJĘCIA nie remountuje już tego komponentu (patrz `key` przy <ZoomImage/>) — remount przeładowywał
+  // obraz przy każdym swipie i to była pauza widoczna jako „chrupnięcie". Zamiast tego zerujemy stan gestu
+  // tutaj: proporcje z metadanych nowego pliku + zoom/pan na start.
+  useEffect(() => {
+    setRatio(initRatio);
+    cur.current = { s: 1, x: 0, y: 0 };
+    base.current = { s: 1, x: 0, y: 0 };
+    // stopAnimation PRZED setValue — inaczej trwająca sprężyna nadpisze zerowanie i obraz zostanie przesunięty
+    [scale, tx, ty, pageX].forEach((v) => v.stopAnimation());
+    scale.setValue(1); tx.setValue(0); ty.setValue(0);
+    pageX.setValue(0); // nowy „current" jest już w środkowym slocie → pasek w pozycji spoczynkowej
+    paging.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source]);
+
+
+  // PanResponder powstaje RAZ, a od kiedy komponent nie remountuje się przy zmianie zdjęcia, jego domknięcie
+  // trzymałoby callbacki z pierwszego renderu — np. `onNext` wyzerowane na czas `processing` nadal by działało.
+  // Dlatego handlery czytamy przez ref aktualizowany co render.
+  const cb = useRef({ onPrev, onNext, onSwipeUp, onSwipeDown, onImmersive, onExit, prevSource, nextSource });
+  cb.current = { onPrev, onNext, onSwipeUp, onSwipeDown, onImmersive, onExit, prevSource, nextSource };
 
   const dist2 = (ts: any[]) => Math.hypot(ts[0].pageX - ts[1].pageX, ts[0].pageY - ts[1].pageY);
   const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
@@ -143,7 +195,7 @@ function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims, onI
       onMoveShouldSetPanResponder: () => true,
       // nie oddawaj gestu responderowi obudowy (swipe ekranu) — inaczej swipe zmiany zdjęcia „ucieka"
       onPanResponderTerminationRequest: () => false,
-      onPanResponderGrant: () => { base.current = { ...cur.current }; pinch.current = null; didPinch.current = false; immersedRef.current = false; },
+      onPanResponderGrant: () => { base.current = { ...cur.current }; pinch.current = null; didPinch.current = false; dragging.current = false; immersedRef.current = false; },
       onPanResponderMove: (e, g) => {
         const ts = e.nativeEvent.touches;
         if (ts.length >= 2) {
@@ -151,14 +203,14 @@ function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims, onI
           const d = dist2(ts);
           if (!pinch.current) pinch.current = { d0: d, s0: base.current.s };
           const ratioG = d / pinch.current.d0;
-          if (onImmersive) {
+          if (cb.current.onImmersive) {
             // W ramce pinch NIE zoomuje w polu — służy do przejść:
             //  • pinch-OUT (rozsunięcie, skala > 1.25 i > 55 px) → IMMERSIVE,
             //  • pinch-IN (zsunięcie, skala < 0.55 i > 55 px) → wyjście do FEED/FOLDERS (parametry jak wyjście z immersive).
             if (!immersedRef.current && pinch.current.s0 * ratioG > 1.25 && d - pinch.current.d0 > 55) {
-              immersedRef.current = true; onImmersive();
-            } else if (!immersedRef.current && onExit && pinch.current.s0 * ratioG < 0.55 && pinch.current.d0 - d > 55) {
-              immersedRef.current = true; onExit();
+              immersedRef.current = true; cb.current.onImmersive();
+            } else if (!immersedRef.current && cb.current.onExit && pinch.current.s0 * ratioG < 0.55 && pinch.current.d0 - d > 55) {
+              immersedRef.current = true; cb.current.onExit();
             }
             return;
           }
@@ -170,6 +222,16 @@ function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims, onI
           cur.current.y = base.current.y + g.dy;
           tx.setValue(cur.current.x);
           ty.setValue(cur.current.y);
+        } else if (ts.length === 1 && !didPinch.current && !paging.current) {
+          // 100% → PASEK podąża za palcem (sam `setValue`, bez setState → zero re-renderów). Ruch w pionie
+          // zostaje dla swipe'u INFO, więc jedziemy dopiero, gdy gest jest wyraźnie poziomy.
+          if (!dragging.current && Math.abs(g.dx) > 6 && Math.abs(g.dx) > Math.abs(g.dy)) dragging.current = true;
+          if (!dragging.current) return;
+          // opór na krańcach: brak sąsiada → pasek ustępuje tylko trochę (tak samo jak w IMMERSIVE)
+          let dx = g.dx;
+          if (dx > 0 && !cb.current.prevSource) dx *= 0.3;
+          if (dx < 0 && !cb.current.nextSource) dx *= 0.3;
+          pageX.setValue(dx);
         }
       },
       onPanResponderRelease: (_e, g) => {
@@ -179,18 +241,31 @@ function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims, onI
         if (cur.current.s <= 1.01) {
           // brak zoomu → swipe: poziomo = zmiana zdjęcia (lewo=następne, prawo=poprzednie); pionowo = INFO (góra=pokaż, dół=schowaj)
           const ax = Math.abs(g.dx), ay = Math.abs(g.dy);
-          if (!wasPinch && ax > SWIPE && ax > ay * 1.2) {
-            if (g.dx < 0) onNext?.(); else onPrev?.();
-          } else if (!wasPinch && ay > SWIPE && ay > ax * 1.2) {
-            if (g.dy < 0) onSwipeUp?.(); else onSwipeDown?.();
+          const horiz = ax > ay * 1.2 && (ax > swipeTh() || Math.abs(g.vx) > FLING);
+          const w = boxRef.current.w || 1;
+          const goNext = !wasPinch && horiz && g.dx < 0 && !!cb.current.nextSource;
+          const goPrev = !wasPinch && horiz && g.dx > 0 && !!cb.current.prevSource;
+          if (!wasPinch && !horiz && ay > SWIPE_V && ay > ax * 1.2) {
+            if (g.dy < 0) cb.current.onSwipeUp?.(); else cb.current.onSwipeDown?.();
           }
+          dragging.current = false;
           cur.current = { s: 1, x: 0, y: 0 };
           base.current = { s: 1, x: 0, y: 0 };
-          Animated.parallel([
-            Animated.spring(scale, { toValue: 1, useNativeDriver: true }),
-            Animated.spring(tx, { toValue: 0, useNativeDriver: true }),
-            Animated.spring(ty, { toValue: 0, useNativeDriver: true }),
-          ]).start();
+          if (goNext || goPrev) {
+            // DOJAZD do sąsiada, potem podmiana zdjęcia — dokładnie jak pager w IMMERSIVE. Pasek wraca na 0
+            // dopiero wtedy, gdy nowy „current" jest już w środkowym slocie, więc nic nie przeskakuje.
+            paging.current = true;
+            Animated.timing(pageX, { toValue: goNext ? -w : w, duration: 180, useNativeDriver: true }).start(() => {
+              if (goNext) cb.current.onNext?.(); else cb.current.onPrev?.();
+            });
+          } else {
+            Animated.parallel([
+              Animated.spring(scale, { toValue: 1, useNativeDriver: true }),
+              Animated.spring(tx, { toValue: 0, useNativeDriver: true }),
+              Animated.spring(ty, { toValue: 0, useNativeDriver: true }),
+              Animated.spring(pageX, { toValue: 0, useNativeDriver: true }),
+            ]).start();
+          }
         } else {
           base.current = { ...cur.current };
         }
@@ -199,28 +274,60 @@ function ZoomImage({ source, onPrev, onNext, onSwipeUp, onSwipeDown, onDims, onI
   ).current;
 
   // dopasowanie „contain" do pola: bierzemy mniejszy z wymiarów (szer wg ratio, wys wg pola)
-  const fit = box.w > 0 && box.h > 0
-    ? (box.w / box.h > ratio ? { width: box.h * ratio, height: box.h } : { width: box.w, height: box.w / ratio })
-    : { width: 0, height: 0 };
+  const fitFor = (r: number) =>
+    box.w > 0 && box.h > 0
+      ? (box.w / box.h > r ? { width: box.h * r, height: box.h } : { width: box.w, height: box.w / r })
+      : { width: 0, height: 0 };
+  const fit = fitFor(ratio);
+  // sąsiedzi: proporcje z METADANYCH źródła — są znane od razu, więc slot nie musi czekać na `onLoad`
+  const fitOf = (src: ImageSourcePropType) => {
+    const mw = (src as any)?.mediaWidth, mh = (src as any)?.mediaHeight;
+    return fitFor(mw && mh ? mw / mh : ratio);
+  };
 
   return (
     <View
       style={{ flex: 1, alignSelf: 'stretch', borderRadius: 2, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}
       onLayout={(e: LayoutChangeEvent) => {
         const { width, height } = e.nativeEvent.layout;
+        boxRef.current = { w: width, h: height }; // PanResponder czyta rozmiar z refa (tworzony raz, bez re-bindu)
         setBox((b) => (Math.abs(b.w - width) < 1 && Math.abs(b.h - height) < 1 ? b : { w: width, h: height }));
       }}
       {...responder.panHandlers}
     >
       {fit.width > 0 ? (
-        <Animated.View style={{ transform: [{ translateX: tx }, { translateY: ty }, { scale }] }}>
-          <ExpoImage
-            source={source}
-            contentFit="contain"
-            cachePolicy="memory-disk"
-            onLoad={(ev: any) => { const s = ev?.source; if (s?.width && s?.height) { setRatio(s.width / s.height); onDims?.(s.width, s.height); } }}
-            style={{ width: fit.width, height: fit.height }}
-          />
+        // PASEK trzech slotów: [prev · current · next], każdy szerokości pola. Sąsiedzi są zamontowani, więc
+        // podczas gestu widać, co nadjeżdża — a nie pustkę i skok jak przy pojedynczym obrazie na sprężynie.
+        <Animated.View style={{ position: 'absolute', left: 0, top: 0, width: box.w, height: box.h, transform: [{ translateX: pageX }] }}>
+          {([-1, 0, 1] as const).map((off) => {
+            const src = off === -1 ? prevSource : off === 0 ? source : nextSource;
+            if (!src) return null;
+            const f = off === 0 ? fit : fitOf(src);
+            const img = (
+              <ExpoImage
+                source={src}
+                contentFit="contain"
+                cachePolicy="memory-disk"
+                // `onLoad` na KAŻDYM slocie, ale skutkuje tylko dla bieżącego — po przesunięciu pagera ten sam
+                // komponent staje się środkowym i drugi raz się nie ładuje, więc handler tylko na off===0 nigdy
+                // by dla niego nie zadziałał.
+                onLoad={(ev: any) => { if (src !== source) return; const im = ev?.source; if (im?.width && im?.height) { setRatio(im.width / im.height); onDims?.(im.width, im.height); } }}
+                style={{ width: f.width, height: f.height }}
+              />
+            );
+            return (
+              // KLUCZ = tożsamość zdjęcia, NIE pozycja slotu. Przy kluczu pozycyjnym środkowy slot dostawał po
+              // przesunięciu nowe `source`, a expo-image trzyma wtedy starą bitmapę do czasu zdekodowania nowej
+              // — stąd mignięcie poprzedniego zdjęcia. Teraz komponent po prostu przesuwa się o slot.
+              <View key={String((src as any)?.uri ?? off)} style={{ position: 'absolute', left: off * box.w, top: 0, width: box.w, height: box.h, alignItems: 'center', justifyContent: 'center' }}>
+                {off === 0 ? (
+                  <Animated.View style={{ transform: [{ translateX: tx }, { translateY: ty }, { scale }] }}>{img}</Animated.View>
+                ) : (
+                  img
+                )}
+              </View>
+            );
+          })}
         </Animated.View>
       ) : null}
       {/* badge AI / RAW — na zewnętrznym View (nie skaluje się z zoomem obrazu) */}
@@ -237,8 +344,12 @@ const viewerBadge = { fontFamily: font.monoBody.family, fontSize: font.monoBody.
 
 export function useImageEditor({
   source,
+  prevSource,
+  nextSource,
   open,
   place,
+  overlay,
+  dimmed = false,
   onExit,
   onPrev,
   onNext,
@@ -250,8 +361,12 @@ export function useImageEditor({
   promptBooster = false,
 }: {
   source?: ImageSourcePropType;
+  prevSource?: ImageSourcePropType; // sąsiedzi do pagera w podglądzie (patrz ZoomImage) — bez nich swipe
+  nextSource?: ImageSourcePropType; // pokazywałby pustkę zamiast nadjeżdżającego zdjęcia
   open: boolean;         // podgląd otwarty (galeria: viewerOpen)
   place?: string | null; // nazwa miejsca (GPS→reverseGeocode), rozwiązywana w GalleryScreen
+  overlay?: ReactNode;   // nakładka galerii (CONFIRM/wynik) — w OBSZARZE TREŚCI, żeby miała szerokość contentu
+  dimmed?: boolean;      // przygaś TREŚĆ podglądu (dialog nad nią) — sama nakładka zostaje w pełnej jasności
   onExit: () => void;    // zamknij podgląd → powrót do siatki
   onPrev: () => void;    // poprzednie zdjęcie
   onNext: () => void;    // następne zdjęcie
@@ -662,10 +777,15 @@ export function useImageEditor({
     <>
       <ScreenTopBar mode="VIEWER" label={label} onCycleMode={view === 'viewer' && !menuOpen ? onCycleMode : undefined} ai={ai} labelActive />
       <View style={{ flex: 1, alignSelf: 'stretch', gap: 16 }}>
+        {/* warstwa przygaszana; nakładka jest JEJ RODZEŃSTWEM, więc dialog nie gaśnie razem z treścią */}
+        <View style={{ flex: 1, alignSelf: 'stretch', gap: 16, opacity: dimmed ? 0.25 : 1 }}>
         {/* content_area: obraz/pod-widok (zajmuje resztę wysokości), a pod nim — dolne menu EDIT */}
         <View style={{ flex: 1, alignSelf: 'stretch' }}>
           {view === 'viewer' ? (
-            displaySource ? <ZoomImage key={workingUri ?? String((source as any)?.uri ?? source)} source={displaySource} onPrev={processing ? undefined : onPrev} onNext={processing ? undefined : onNext} onSwipeUp={() => setInfoOpen(true)} onSwipeDown={() => setInfoOpen(false)} onDims={(w, h) => { if (!assetDimsRef.current) setDims({ w, h }); }} onImmersive={processing || workingUri ? undefined : onRequestImmersive} onExit={processing || workingUri ? undefined : onExit} /> : null
+            // KLUCZ tylko po wyniku edycji (workingUri) — NIE po zdjęciu. Klucz ze zdjęcia remountował cały
+            // ZoomImage przy każdym PREV/NEXT, więc obraz ładował się od zera (pauza = „chrupnięcie" swipe'a).
+            // Zerowanie zoomu przy zmianie zdjęcia robi teraz efekt wewnątrz ZoomImage.
+            displaySource ? <ZoomImage key={workingUri ?? 'src'} source={displaySource} prevSource={workingUri ? undefined : prevSource} nextSource={workingUri ? undefined : nextSource} onPrev={processing ? undefined : onPrev} onNext={processing ? undefined : onNext} onSwipeUp={() => setInfoOpen(true)} onSwipeDown={() => setInfoOpen(false)} onDims={(w, h) => { if (!assetDimsRef.current) setDims({ w, h }); }} onImmersive={processing || workingUri ? undefined : onRequestImmersive} onExit={processing || workingUri ? undefined : onExit} /> : null
           ) : view === 'crop' ? (
             displaySource ? <CropStage ref={cropRef} source={displaySource} onDirty={setCropDirty} /> : null
           ) : view === 'magicErase' ? (
@@ -703,7 +823,13 @@ export function useImageEditor({
 
         {/* INFO — parametry obrazka + ślad AI (Figma _AI 426:7051). Nad menu, gdy oba otwarte. Swipe-up/INFO. */}
         {view === 'viewer' && infoOpen ? (
-          <InfoPanel dims={dims} fileSize={fileSize} format={formatLabel((source as any)?.filename, !!(source as any)?.raw)} aiTools={aiTools} aiPrompt={aiPrompt} aiUpscale={aiUpscale} prov={prov} place={place} />
+          <View style={{ alignSelf: 'stretch', gap: 8 }}>
+            {/* NAZWA PLIKU — wyśrodkowana, tuż nad sekcją INFO (wcześniej siedziała w górnym pasku) */}
+            <Text numberOfLines={1} style={{ fontFamily: font.monoLabel.family, fontSize: font.monoLabel.size, color: screen.olive.primary, textAlign: 'center', ...phosphorGlow }}>
+              {truncName((source as any)?.filename)}
+            </Text>
+            <InfoPanel dims={dims} fileSize={fileSize} format={formatLabel((source as any)?.filename, !!(source as any)?.raw)} aiTools={aiTools} aiPrompt={aiPrompt} aiUpscale={aiUpscale} prov={prov} place={place} />
+          </View>
         ) : null}
 
         {/* MENU EDIT — dwupoziomowy pasek pod obrazem (Figma _AI), tylko w widoku VIEWER.
@@ -745,6 +871,8 @@ export function useImageEditor({
             </View>
           </View>
         ) : null}
+        </View>
+        {overlay}
       </View>
     </>
   );

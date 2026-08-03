@@ -53,13 +53,14 @@ type MomentsGridProps = {
   selectMode?: boolean;
   checkedAt?: (i: number) => boolean;
   onLongPressAt?: (i: number) => void;
+  chrome?: string;                     // fosfor kafli skompensowany pod filtr trybu (chromePhosphor)
 };
 
 const MomentTile = memo(function MomentTile({
-  index, source, x, y, size, selected, images, onOpen, onCycle, onLongPress, check, selectMode,
+  index, source, x, y, size, selected, images, onOpen, onCycle, onLongPress, check, selectMode, chrome = screen.olive.primary,
 }: {
   index: number; source?: ImageSourcePropType; x: number; y: number; size: number; selected?: boolean; images?: boolean;
-  onOpen?: (i: number) => void; onCycle?: (i: number) => void; onLongPress?: (i: number) => void; check?: boolean | null; selectMode?: boolean;
+  onOpen?: (i: number) => void; onCycle?: (i: number) => void; onLongPress?: (i: number) => void; check?: boolean | null; selectMode?: boolean; chrome?: string;
 }) {
   return (
     <Pressable onPress={() => onOpen?.(index)} onLongPress={onLongPress ? () => onLongPress(index) : undefined} delayLongPress={350} style={{ position: 'absolute', left: x, top: y, width: size, height: size }}>
@@ -73,11 +74,11 @@ const MomentTile = memo(function MomentTile({
       {selected ? (
         <>
           <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 2, borderWidth: 3, borderColor: color.dark1A }} />
-          <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 2, borderWidth: 2, borderColor: screen.olive.primary }} />
+          <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 2, borderWidth: 2, borderColor: chrome }} />
           {/* uchwyt 2× — trójkąt w prawym-dolnym rogu (jak w feedzie); ukryty w trybie zaznaczania */}
           {!selectMode && onCycle ? (
             <Pressable onPress={() => onCycle(index)} hitSlop={8} style={{ position: 'absolute', right: 3, bottom: 3, padding: 3 }}>
-              <Svg width={12} height={12}><Polygon points="0,12 12,0 12,12" fill={screen.olive.primary} /></Svg>
+              <Svg width={12} height={12}><Polygon points="0,12 12,0 12,12" fill={chrome} /></Svg>
             </Pressable>
           ) : null}
         </>
@@ -90,7 +91,7 @@ const MomentTile = memo(function MomentTile({
         </View>
       ) : null}
       {check != null ? (
-        <View pointerEvents="none" style={{ position: 'absolute', top: 6, left: 6, width: 18, height: 18, borderRadius: 3, borderWidth: 2, borderColor: screen.olive.primary, backgroundColor: check ? color.dark21 : screen.olive.primary }} />
+        <View pointerEvents="none" style={{ position: 'absolute', top: 6, left: 6, width: 18, height: 18, borderRadius: 3, borderWidth: 2, borderColor: chrome, backgroundColor: check ? color.dark21 : chrome }} />
       ) : null}
     </Pressable>
   );
@@ -98,7 +99,7 @@ const MomentTile = memo(function MomentTile({
 const badgeTxt = { fontFamily: font.monoBody.family, fontSize: font.monoBody.size, color: screen.olive.primary, textShadowColor: color.dark21, textShadowRadius: 2, textShadowOffset: { width: 0, height: 0 } } as const;
 
 export const MomentsGrid = memo(forwardRef<MomentsGridHandle, MomentsGridProps>(function MomentsGrid({
-  data, timeOf, placeOf, width, selected, hideCursor, images = true, onOpen, onSelectAt, onScrollActive, spanOf, onCycleSpan, selectMode, checkedAt, onLongPressAt,
+  data, timeOf, placeOf, width, selected, hideCursor, images = true, onOpen, onSelectAt, onScrollActive, spanOf, onCycleSpan, selectMode, checkedAt, onLongPressAt, chrome,
 }: MomentsGridProps, ref) {
   const gap = MOMENTS_GAP;
   const cols = MOMENTS_COLS;
@@ -288,6 +289,7 @@ export const MomentsGrid = memo(forwardRef<MomentsGridHandle, MomentsGridProps>(
               onLongPress={onLongPressAt ? longTile : undefined}
               check={selectMode ? !!checkedAt?.(i) : undefined}
               selectMode={selectMode}
+              chrome={chrome}
             />
           );
         })}

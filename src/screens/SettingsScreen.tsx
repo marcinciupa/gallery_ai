@@ -233,6 +233,7 @@ export function useSettingsScreen({
   onToggleMoments?: (id: string) => void;
 } = {}) {
   const [sections, setSections] = useState<SectionData[]>(INITIAL_SECTIONS);
+
   const [selected, setSelected] = useState(0);
   const [view, setView] = useState<'MAIN' | 'INCLUDED' | 'EXCLUDED' | 'HIDDEN' | 'MOMENTS'>('MAIN'); // sub-widoki edytora filtra biblioteki
   const [libSel, setLibSel] = useState(0); // kursor w liście folderów sub-widoku

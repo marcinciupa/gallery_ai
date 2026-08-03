@@ -61,11 +61,11 @@ export function packFeed(spans: number[], cols: number): { pos: { r: number; c: 
 // scrolla. Wcześniej domknięcia `() => onOpen(i)` były nowe co render → memo się psuł → przerysowanie WSZYSTKICH
 // widocznych kafli na każdy krok scrolla (drogie przy dużych ExpoImage 2×/3× = lokalny spadek fps).
 const FeedTile = memo(function FeedTile({
-  index, source, x, y, size, span, lowQ, selected, images, onOpen, onCycle, onLongPress, selectMode, check,
+  index, source, x, y, size, span, lowQ, selected, images, onOpen, onCycle, onLongPress, selectMode, check, chrome = screen.olive.primary,
 }: {
   index: number; source?: ImageSourcePropType; x: number; y: number; size: number; span: number; lowQ?: boolean;
   selected?: boolean; images?: boolean;
-  onOpen?: (i: number) => void; onCycle?: (i: number) => void; onLongPress?: (i: number) => void; selectMode?: boolean; check?: boolean | null;
+  onOpen?: (i: number) => void; onCycle?: (i: number) => void; onLongPress?: (i: number) => void; selectMode?: boolean; check?: boolean | null; chrome?: string;
 }) {
   const overlay = { position: 'absolute' as const, top: 0, left: 0, right: 0, bottom: 0, borderRadius: 2 };
   return (
@@ -109,12 +109,12 @@ const FeedTile = memo(function FeedTile({
         <>
           {/* podwójna ramka: czarna 3px pod, fosforowa 2px na wierzchu (jak PhosphorCover) */}
           <View pointerEvents="none" style={{ ...overlay, borderWidth: 3, borderColor: color.dark1A }} />
-          <View pointerEvents="none" style={{ ...overlay, borderWidth: 2, borderColor: screen.olive.primary }} />
+          <View pointerEvents="none" style={{ ...overlay, borderWidth: 2, borderColor: chrome }} />
           {/* uchwyt zmiany rozmiaru — trójkąt w prawym-dolnym rogu (ukryty w trybie zaznaczania) */}
           {!selectMode ? (
             <Pressable onPress={() => onCycle?.(index)} hitSlop={8} style={{ position: 'absolute', right: 3, bottom: 3, padding: 3 }}>
               <Svg width={12} height={12}>
-                <Polygon points="0,12 12,0 12,12" fill={screen.olive.primary} />
+                <Polygon points="0,12 12,0 12,12" fill={chrome} />
               </Svg>
             </Pressable>
           ) : null}
@@ -125,7 +125,7 @@ const FeedTile = memo(function FeedTile({
         // Checkbox bez ptaszka (Figma 450:1861): niezaznaczony = fosforowy, ZAZNACZONY = ciemny.
         <View
           pointerEvents="none"
-          style={{ position: 'absolute', top: 6, left: 6, width: 18, height: 18, borderRadius: 3, borderWidth: 2, borderColor: screen.olive.primary, backgroundColor: check ? color.dark21 : screen.olive.primary }}
+          style={{ position: 'absolute', top: 6, left: 6, width: 18, height: 18, borderRadius: 3, borderWidth: 2, borderColor: chrome, backgroundColor: check ? color.dark21 : chrome }}
         />
       ) : null}
     </Pressable>
@@ -147,10 +147,11 @@ type FeedGridProps = {
   selectMode?: boolean;                       // tryb zaznaczania → checkbox zamiast uchwytu, tap = toggle
   checkedAt?: (i: number) => boolean;         // czy kafel i jest zaznaczony
   onLongPressAt?: (i: number) => void;        // long-press → wejście w tryb zaznaczania (z tym kaflem)
+  chrome?: string;                            // fosfor kafli skompensowany pod filtr trybu (chromePhosphor)
 };
 
 export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function FeedGrid({
-  data, cols, width, spans, selected, hideCursor, images = true, onCycleSpan, onOpen, onSelectAt, onScrollActive, selectMode, checkedAt, onLongPressAt,
+  data, cols, width, spans, selected, hideCursor, images = true, onCycleSpan, onOpen, onSelectAt, onScrollActive, selectMode, checkedAt, onLongPressAt, chrome,
 }: FeedGridProps, ref) {
   // Geometria 1:1 z gallery view: kolumna = width/cols (pitch), kafel 1× = kolumna − gap, margines zewn. = gap/2
   // (odpowiednik `padding: gap/2` na kaflach FlatListy). Dzięki temu feed ma tę samą szerokość i marginesy.
@@ -446,6 +447,7 @@ export const FeedGrid = memo(forwardRef<FeedGridHandle, FeedGridProps>(function 
               onLongPress={onLongPressAt ? longTile : undefined}
               selectMode={selectMode}
               check={selectMode ? !!checkedAt?.(i) : undefined}
+              chrome={chrome}
             />
           );
         })}

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Gallery+",
     "slug": "gallery-ai",
-    "version": "0.9635",
+    "version": "0.966",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -12,9 +12,12 @@
     },
     "android": {
       "package": "com.glue010.galleryai",
-      "versionCode": 9635,
+      "versionCode": 9660,
       "blockedPermissions": [
         "android.permission.ACTIVITY_RECOGNITION"
+      ],
+      "permissions": [
+        "android.permission.MANAGE_EXTERNAL_STORAGE"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#1A1A1A",
@@ -42,7 +45,8 @@
       [
         "expo-media-library",
         {
-          "isAccessMediaLocationEnabled": true
+          "isAccessMediaLocationEnabled": true,
+          "granularPermissions": ["photo", "video"]
         }
       ],
       [

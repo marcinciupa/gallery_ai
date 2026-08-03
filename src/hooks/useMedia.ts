@@ -12,6 +12,7 @@
 import { useEffect, useState } from 'react';
 import { Platform, PermissionsAndroid, ImageSourcePropType } from 'react-native';
 import { getAiTags } from '../lib/aiTags';
+import { deleteAssets } from '../lib/mediaOps';
 
 export type MediaStatus = 'idle' | 'loading' | 'denied' | 'ready' | 'error' | 'unsupported';
 
@@ -19,7 +20,7 @@ export type MediaStatus = 'idle' | 'loading' | 'denied' | 'ready' | 'error' | 'u
 // ⚠️ PERF: wymiary trzymamy pod NIE-standardowymi kluczami mediaWidth/mediaHeight, a NIE width/height — bo width/height
 // to rozpoznawane pola ImageSourcePropType i expo-image dekodowałoby wtedy KAŻDĄ miniaturę w pełnej rozdzielczości
 // oryginału → zapaść pamięci/FPS. mediaWidth/mediaHeight/filename są ignorowane przez expo-image (jak raw/ai).
-export type PhotoSource = { uri: string; raw?: boolean; ai?: boolean; mediaWidth?: number | null; mediaHeight?: number | null; filename?: string | null; creationTime?: number | null; albumId?: string };
+export type PhotoSource = { uri: string; raw?: boolean; ai?: boolean; mediaWidth?: number | null; mediaHeight?: number | null; filename?: string | null; creationTime?: number | null; modificationTime?: number | null; albumId?: string };
 
 // Formaty RAW (po rozszerzeniu nazwy pliku). Detekcja best-effort — filename z metadanych, gdy dostępny.
 const RAW_RE = /\.(dng|arw|cr[23w]|nef|nrw|orf|raf|rw2|pef|sr[2fw]|raw|x3f|3fr|fff|iiq|kdc|mos|mrw|dcr|k25)$/i;
@@ -27,7 +28,12 @@ const isRaw = (name?: string | null) => !!name && RAW_RE.test(name);
 // Jednorazowa prośba o ACCESS_MEDIA_LOCATION (runtime) — patrz placeOfAsset.
 let mediaLocAsked = false;
 
-const flag = (m: any, tags: Set<string>): PhotoSource => ({ uri: m.id, raw: isRaw(m.filename), ai: tags.has(m.id), mediaWidth: m.width ?? null, mediaHeight: m.height ?? null, filename: m.filename ?? null, creationTime: m.creationTime ?? null });
+// `creationTime` = DATE_TAKEN, które w MediaStore bywa PUSTE (zrzuty ekranu, pliki pobrane, wyniki AI).
+// Bez fallbacku takie zdjęcie dostawało w sortowaniu `?? 0`, czyli rok 1970 — lądowało na samym końcu
+// folderu i wyglądało na zgubione. Podstawiamy wtedy datę modyfikacji (zawsze jest), a surową modyfikację
+// trzymamy osobno pod `modificationTime` — to po niej sortuje SORT: ADDED (świeżo przeniesione i skopiowane
+// pliki mają ją najnowszą, więc od razu są na górze; DATE_TAKEN przy przenoszeniu się NIE zmienia).
+const flag = (m: any, tags: Set<string>): PhotoSource => ({ uri: m.id, raw: isRaw(m.filename), ai: tags.has(m.id), mediaWidth: m.width ?? null, mediaHeight: m.height ?? null, filename: m.filename ?? null, creationTime: m.creationTime ?? m.modificationTime ?? null, modificationTime: m.modificationTime ?? null });
 // count opcjonalny — świadomie NIE liczymy zdjęć na starcie (skan wszystkich metadanych = lawina GC = jank).
 export type MediaFolder = { id: string; name: string; cover?: ImageSourcePropType; count?: number };
 
@@ -43,7 +49,11 @@ export function useMedia() {
     (async () => {
       setStatus('loading');
       const ML: any = await import('expo-media-library');
-      const perm = await ML.requestPermissionsAsync();
+      // Prosimy TYLKO o zdjęcia i wideo. Bez jawnej listy expo-media-library bierze wszystkie granularne
+      // uprawnienia ZADEKLAROWANE W MANIFEŚCIE, a plugin domyślnie dopisuje tam też READ_MEDIA_AUDIO —
+      // przez co galeria pytała o „muzykę i audio", których w ogóle nie czyta. (Deklarację też usunięto:
+      // app.json → plugin expo-media-library → granularPermissions.)
+      const perm = await ML.requestPermissionsAsync(false, ['photo', 'video']);
       if (!perm.granted && perm.accessPrivileges !== 'limited') {
         if (!cancelled) setStatus('denied');
         return;
@@ -112,14 +122,25 @@ export function useMedia() {
     if (Platform.OS === 'web') return;
     const ML: any = await import('expo-media-library');
     if (assetUris.length) {
-      try { await ML.Asset.delete(assetUris.map((u) => new ML.Asset(u))); } catch { /* odmowa/anulowanie systemowego dialogu */ }
+      // przez mediaOps.deleteAssets: gdy apka ma „dostęp do wszystkich plików", kasuje BEZ systemowego okna
+      // (stare API woła contentResolver.delete wprost); bez uprawnienia spada na okno zgody jak dotąd
+      try { await deleteAssets(assetUris); } catch { /* odmowa/anulowanie systemowego dialogu */ }
     }
     if (albumIds.length) {
       try { await ML.Album.delete(albumIds.map((id) => new ML.Album(id))); } catch { /* j.w. */ }
     }
   };
 
-  /** Leniwe pobranie zdjęć albumu (przy wejściu w folder). */
+  /**
+   * Leniwe pobranie zdjęć albumu (przy wejściu w folder) — CAŁA zawartość, bez limitu.
+   *
+   * ⚠️ NIGDY nie dokładać tu `limit()`. Był tu `limit(500)` i cicho ucinał folder: zdjęcie starsze niż
+   * 500 najnowszych (albo z pustym DATE_TAKEN — zrzuty ekranu i pliki pobrane, które przy sortowaniu
+   * malejącym lądują na końcu) po prostu NIE ISTNIAŁO dla siatki. Wyszło to przy przenoszeniu pliku do
+   * dużego folderu: plik był na dysku i w innych galeriach, a u nas nigdzie. Licznik na kafelku był przy
+   * tym poprawny (liczymy go zapytaniem bez limitu), więc kafelek pokazywał więcej, niż dawało się otworzyć.
+   * Koszt: `exeForMetadata` to lekkie metadane, a identyczne zapytanie bez limitu i tak lata dla liczników.
+   */
   const loadPhotos = async (albumId: string): Promise<ImageSourcePropType[]> => {
     if (Platform.OS === 'web') return [];
     const ML: any = await import('expo-media-library');
@@ -128,7 +149,6 @@ export function useMedia() {
       .album(new ML.Album(albumId))
       .eq(ML.AssetField.MEDIA_TYPE, ML.MediaType.IMAGE)
       .orderBy({ key: ML.AssetField.CREATION_TIME, ascending: false })
-      .limit(500)
       .exeForMetadata();
     return meta.map((m: any) => flag(m, tags) as ImageSourcePropType);
   };

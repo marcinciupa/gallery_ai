@@ -19,6 +19,20 @@ export async function getAiTags(): Promise<Set<string>> {
   return cache;
 }
 
+/**
+ * Przeniesienie znacznika na NOWE id assetu. Potrzebne przy MOVE: przenoszenie realizujemy jako
+ * wstawienie kopii + skasowanie oryginału (patrz mediaOps), więc plik dostaje nowe content:// URI,
+ * a tag trzymamy właśnie po URI — bez tego przeniesione zdjęcie gubiłoby etykietę „AI".
+ */
+export async function retagAiAsset(oldId: string, newId: string): Promise<void> {
+  if (!oldId || !newId) return;
+  const s = await getAiTags();
+  if (!s.has(oldId)) return;
+  s.delete(oldId);
+  s.add(newId);
+  try { await AsyncStorage.setItem(KEY, JSON.stringify([...s])); } catch { /* zapis best-effort */ }
+}
+
 export async function addAiTag(id: string): Promise<void> {
   if (!id) return;
   const s = await getAiTags();

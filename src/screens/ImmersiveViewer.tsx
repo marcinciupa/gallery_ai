@@ -24,7 +24,7 @@ import {
 } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { dims, font, screen, textShadow } from '../theme/tokens';
-import { InfoPanel, type ImageInfo } from './EditorScreen';
+import { InfoPanel, truncName, type ImageInfo } from './EditorScreen';
 import { hapticTap, hapticZoomIn, hapticZoomOut } from '../lib/haptics';
 
 const phosphorGlow = {
@@ -44,17 +44,6 @@ const SWIPE_TH = 50;       // próg pionowego swipe (px): w górę = pokaż info
 const INFO_H = 280;        // wysokość dolnego obszaru INFO (panel danych + CLOSE); o tyle obraz jedzie w górę i się kurczy
 
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
-// nazwa pliku w górnym pasku; gdy za długa → prefix + „~" + 3 ostatnie znaki bazy + rozszerzenie (np. „moondsad~145.jpg").
-function truncName(name?: string | null, max = 22): string {
-  if (!name) return '';
-  if (name.length <= max) return name;
-  const dot = name.lastIndexOf('.');
-  const ext = dot > 0 ? name.slice(dot) : '';
-  const base = dot > 0 ? name.slice(0, dot) : name;
-  const tail = base.slice(-3);
-  const budget = Math.max(1, max - 1 - tail.length - ext.length); // miejsce na prefix po odjęciu „~" + tail + ext
-  return `${base.slice(0, budget)}~${tail}${ext}`;
-}
 // „contain": rozmiar obrazu (ratio = w/h) wpisany w prostokąt WxH z zachowaniem proporcji
 function containFit(W: number, H: number, ratio: number) {
   return W / H > ratio ? { w: H * ratio, h: H } : { w: W, h: W / ratio };
@@ -96,7 +85,10 @@ export function ImmersiveViewer({
   const scale = useRef(new Animated.Value(1)).current;
   const tx = useRef(new Animated.Value(0)).current;
   const ty = useRef(new Animated.Value(0)).current;
-  const infoV = useRef(new Animated.Value(0)).current; // 0 = tylko obraz (full), 1 = panel info widoczny (translate/opacity paska+panelu)
+  // START od STANU, w jakim wchodzimy: gdy INFO było już otwarte w podglądzie, panel ma być na miejscu od
+  // pierwszej klatki. Wcześniej wartość startowa była zawsze 0 i efekt na `info.open` animował wjazd od dołu
+  // przy samym wejściu w IMMERSIVE — animacja przejścia, którego użytkownik nie wykonał.
+  const infoV = useRef(new Animated.Value(info.open ? 1 : 0)).current; // 0 = tylko obraz (full), 1 = panel info widoczny
   const imgHV = useRef(new Animated.Value(0)).current;  // animowana WYSOKOŚĆ obszaru obrazu (obraz `contain` → zawsze pełna szerokość)
   const imgTopV = useRef(new Animated.Value(0)).current; // animowany TOP obszaru obrazu: 0 ↔ TOP_BAR_H (przy INFO obraz pod górnym paskiem)
   // lustrzane wartości numeryczne + bookkeeping gestu (czytane w PanResponderze bez re-tworzenia go)
@@ -112,6 +104,16 @@ export function ImmersiveViewer({
   const onCloseRef = useRef(onClose);
   const setIndexRef = useRef(setIndex);
   useEffect(() => { env.current = { W, H, index, n, ratio: centerRatio, open: info.open, setOpen: info.setOpen }; onCloseRef.current = onClose; setIndexRef.current = setIndex; });
+
+  // PREFETCH sąsiadów o dwa dalej. Sloty ±1 są zamontowane, więc ich dekodowanie startuje dopiero przy
+  // wjeździe w kadr — a przy szybkim przewijaniu to właśnie ono ścinało klatki. Rozgrzewamy cache z wyprzedzeniem;
+  // `memory-disk`, żeby kolejny mount brał gotowy bitmapę zamiast czytać i dekodować plik od zera.
+  useEffect(() => {
+    const uris = [index - 2, index + 2]
+      .map((i) => (photos[i] as any)?.uri)
+      .filter((u): u is string => typeof u === 'string' && !!u);
+    if (uris.length) ExpoImage.prefetch(uris, 'memory-disk').catch(() => {});
+  }, [index, photos]);
 
   // zmiana zdjęcia / obrót ekranu → pasek w pozycji spoczynkowej (-index*W) i wyzerowany zoom.
   // Sloty pozycjonowane ABSOLUTNIE po indeksie zdjęcia (left = i*W) i kluczowane indeksem — środkowy obraz to
@@ -221,7 +223,7 @@ export function ImmersiveViewer({
       if (!moved.current && dt < TAP_MS && Math.abs(g.dx) < TAP_MOVE && Math.abs(g.dy) < TAP_MOVE) {
         // tap NIE pokazuje info (do tego jest swipe); tap w pas CLOSE przy widocznym info = wyjście
         if (env.current.open && g.y0 > h - CLOSE_BAND) doClose();
-        Animated.spring(pageX, { toValue: -idx * w, useNativeDriver: false }).start();
+        Animated.spring(pageX, { toValue: -idx * w, useNativeDriver: true }).start();
         pageNum.current = -idx * w;
         return;
       }
@@ -231,7 +233,7 @@ export function ImmersiveViewer({
         if (g.dy < 0) { if (!env.current.open) { hapticTap(); env.current.setOpen(true); } }
         else if (env.current.open) { hapticTap(); env.current.setOpen(false); }
         else { doClose(); return; } // swipe-down przy schowanym info → wyjście z widoku
-        Animated.spring(pageX, { toValue: -idx * w, useNativeDriver: false }).start();
+        Animated.spring(pageX, { toValue: -idx * w, useNativeDriver: true }).start();
         pageNum.current = -idx * w;
         return;
       }
@@ -239,23 +241,36 @@ export function ImmersiveViewer({
       // spoczynkowa nowego indeksu = koniec animacji → brak skoku re-centrowania (i brak podmiany source środka).
       // Zmiana zdjęcia na ODLEGŁOŚĆ (mniejszy próg) LUB na PRĘDKOŚĆ (flick) — wcześniej wymagało 22% szerokości
       // i ignorowało prędkość, więc krótki szybki gest nic nie robił = „za dużo wysiłku".
-      const TH = w * 0.14;
+      const TH = w * 0.12; // spójne z podglądem w ramce (ZoomImage.swipeTh)
       const FLING = 0.3; // px/ms — szybki ruch przełącza mimo krótkiej drogi
       const next = (g.dx < -TH || g.vx < -FLING) && idx < cnt - 1;
       const prev = (g.dx > TH || g.vx > FLING) && idx > 0;
       if (next) {
-        Animated.timing(pageX, { toValue: -(idx + 1) * w, duration: 180, useNativeDriver: false }).start(() => setIndexRef.current(idx + 1));
+        Animated.timing(pageX, { toValue: -(idx + 1) * w, duration: 180, useNativeDriver: true }).start(() => setIndexRef.current(idx + 1));
       } else if (prev) {
-        Animated.timing(pageX, { toValue: -(idx - 1) * w, duration: 180, useNativeDriver: false }).start(() => setIndexRef.current(idx - 1));
+        Animated.timing(pageX, { toValue: -(idx - 1) * w, duration: 180, useNativeDriver: true }).start(() => setIndexRef.current(idx - 1));
       } else {
-        Animated.spring(pageX, { toValue: -idx * w, useNativeDriver: false }).start();
+        Animated.spring(pageX, { toValue: -idx * w, useNativeDriver: true }).start();
         pageNum.current = -idx * w;
       }
     },
   }), []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // trzy sloty: [prev, current, next] — tylko istniejące zdjęcia
-  const slots = [index - 1, index, index + 1];
+  // OKNO SLOTÓW z opóźnieniem. Sąsiedzi ±1 są już zdekodowani, więc samo przejście o jedno zdjęcie jest darmowe
+  // — kosztuje dopiero montaż NOWEGO sąsiada (tego o dwa dalej), a ten wypadał dokładnie w chwili zatwierdzenia
+  // swipe'a i zjadał klatki. Dlatego okno przesuwamy dopiero po chwili bezruchu: zaraz po zmianie zdjęcia
+  // renderujemy jeszcze sloty spod POPRZEDNIEGO indeksu (nowy „current" i tak jest wśród nich), a nowy sąsiad
+  // dochodzi ~220 ms później, gdy animacja jest już skończona. Widać to było po tym, że przy włączonym INFO
+  // chrupnięć nie ma — obraz jest wtedy mniejszy, więc dekodowanie tańsze.
+  const [warm, setWarm] = useState(index);
+  useEffect(() => {
+    const t = setTimeout(() => setWarm(index), 220);
+    return () => clearTimeout(t);
+  }, [index]);
+  const slots = useMemo(() => {
+    const set = new Set<number>([index, warm - 1, warm, warm + 1]);
+    return [...set].filter((i) => i >= 0 && i < n).sort((a, b) => a - b);
+  }, [index, warm, n]);
   const cap = { fontFamily: font.monoCaption.family, fontSize: font.monoCaption.size, color: screen.olive.primary, ...phosphorGlow } as const;
   const val = { fontFamily: font.monoLabel.family, fontSize: font.monoLabel.size, color: screen.olive.primary, ...phosphorGlow } as const;
   // panel INFO wjeżdża od dołu (translateY INFO_H→0) + opacity; wysokość obrazu (imgHV) kurczy się osobno,
@@ -299,16 +314,18 @@ export function ImmersiveViewer({
           })}
         </Animated.View>
 
-        {/* górny pasek info_area (Figma: height 40, padding 8/16) — [ZOOM 100%] [nazwa — środek] [FILE x/n]; pojawia się z INFO */}
+        {/* górny pasek info_area — [ZOOM 100%] … [FILE x/n]. Nazwa pliku przeniesiona NAD sekcję INFO (niżej). */}
         <Animated.View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, width: W, height: TOP_BAR_H, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 16, opacity: infoV }}>
           <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}><Text style={cap}>ZOOM</Text><Text style={val}>{zoomPct}%</Text></View>
-          <Text numberOfLines={1} style={{ ...val, flex: 1, textAlign: 'center' }}>{truncName(info.filename)}</Text>
+          <View style={{ flex: 1 }} />
           <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}><Text style={cap}>FILE</Text><Text style={val}>{index + 1}/{n}</Text></View>
         </Animated.View>
 
         {/* dolny obszar INFO — wjeżdża POD obraz (translateY) i pojawia się (opacity): TEN SAM InfoPanel + CLOSE */}
         <Animated.View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: INFO_H, transform: [{ translateY: infoTY }], opacity: infoV }}>
-          <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
+          <View style={{ paddingHorizontal: 16, paddingTop: 12, gap: 8 }}>
+            {/* NAZWA PLIKU — wyśrodkowana, tuż nad sekcją INFO */}
+            <Text numberOfLines={1} style={{ ...val, textAlign: 'center' }}>{truncName(info.filename)}</Text>
             <InfoPanel dims={info.dims} fileSize={info.fileSize} format={info.format} aiTools={info.aiTools} aiPrompt={info.aiPrompt} aiUpscale={info.aiUpscale} prov={info.prov} />
           </View>
           <View style={{ flex: 1 }} />
