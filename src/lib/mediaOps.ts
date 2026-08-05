@@ -29,6 +29,7 @@
  */
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
+import { File as FsFile } from 'expo-file-system';
 import { getAiTags, addAiTag, retagAiAsset } from './aiTags';
 
 /** Wynik operacji: ile plików się udało, ile padło, oraz id albumu docelowego (do klawisza OPEN). */
@@ -133,6 +134,14 @@ async function copyAiTags(srcIds: string[], created: any[]): Promise<void> {
  * po każdym pliku, czy wpis faktycznie zniknął — jeśli nie (np. karta SD), dokańczamy takie sztuki starą
  * drogą z oknem zgody, żeby nie zostawić „duchów": miniatur wskazujących na nieistniejące pliki.
  * Bez uprawnienia zachowanie jest jak dotąd: jedno systemowe okno na paczkę.
+ *
+ * ⚠️ DLACZEGO NOWE API (`File.delete()`), a nie legacy `deleteAsync` (znalezione na emulatorze API 34,
+ * v0.9665): legacy sprawdza prawo zapisu na ścieżce z DOSŁOWNIE doklejonym `/..` do nazwy pliku
+ * (`Uri.withAppendedPath(uri, "..")`), a jądro na `plik.jpg/..` zwraca ENOTDIR → `canWrite()` = false →
+ * „isn't deletable" ZANIM cokolwiek spróbuje skasować. Ścieżki WEWNĘTRZNE (cache) ratuje inna gałąź
+ * (porównanie po `canonicalPath`, które `..` normalizuje), dlatego bug gryzie wyłącznie pliki na storage
+ * współdzielonym — czyli dokładnie te, dla których mamy „dostęp do wszystkich plików". Efekt był taki,
+ * że okno zgody wyskakiwało MIMO przyznanego uprawnienia. Nowe API waliduje ścieżkę samego pliku.
  */
 export async function deleteAssets(assetIds: string[]): Promise<void> {
   if (!nativeOnly() || !assetIds.length) return;
@@ -145,11 +154,12 @@ async function deleteOriginals(ML: any, assetIds: string[]): Promise<void> {
   // uprawnienia nie ma, po prostu rzuci i spadniemy niżej. Operacja jest tu jedynym wiarygodnym testem.
   const leftovers: string[] = [];
   for (const id of assetIds) {
-    let path = '';
+    let file: FsFile | null = null;
     try {
-      path = await new ML.Asset(id).getUri();
+      const path = await new ML.Asset(id).getUri();
       if (!path) throw new Error('NO PATH');
-      await FileSystem.deleteAsync(path, { idempotent: true });
+      file = new FsFile(path);
+      if (file.exists) file.delete();
     } catch {
       // brak prawa zapisu do pliku (czyli brak „dostępu do wszystkich plików") → niech pójdzie drogą systemową
       leftovers.push(id);
@@ -160,9 +170,8 @@ async function deleteOriginals(ML: any, assetIds: string[]): Promise<void> {
     // więc dla realnie skasowanego pliku i tak wchodziliśmy w systemowe kasowanie, czyli w to okno, które
     // właśnie omijamy. Ewentualny osierocony rekord MediaProvider sprząta sam.
     try {
-      const info = await FileSystem.getInfoAsync(path);
-      if (info.exists) leftovers.push(id);
-    } catch { /* nie da się sprawdzić — ufamy, że deleteAsync nie rzucił */ }
+      if (file.exists) leftovers.push(id);
+    } catch { /* nie da się sprawdzić — ufamy, że delete nie rzucił */ }
   }
   if (!leftovers.length) return;
   await ML.Asset.delete(leftovers.map((id: string) => new ML.Asset(id))); // rzuci, gdy user odmówi
