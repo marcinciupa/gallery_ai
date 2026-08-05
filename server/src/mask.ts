@@ -164,6 +164,46 @@ export function maskBBox(mask: Buffer, width: number, height: number): Roi | nul
   return { left: minX, top: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
 }
 
+/**
+ * Rozbija maskę na SPÓJNE OBSZARY (bbox każdego), od największego. Potrzebne w GENERATIVE FILL:
+ * obrót kadru zostawia kilka osobnych dziur w rogach, a jeden wspólny bbox obejmuje wtedy prawie całe
+ * zdjęcie. ROI robiło się więc całym kadrem, model przerysowywał CAŁĄ scenę, a my zostawialiśmy z tego
+ * tylko rogi — stąd zgłoszenie „w rogach jest coś, co nie pasuje do obróconego zdjęcia". Osobny wycinek
+ * na dziurę daje modelowi prawdziwe otoczenie tej dziury i zadanie lokalne.
+ *
+ * Zwraca `null`, gdy obszarów jest więcej niż `max` (np. maska malowana palcem w kilkunastu kawałkach) —
+ * wywołujący wraca wtedy do jednego wspólnego bboxa, zamiast robić kilkanaście wywołań modelu.
+ */
+export function maskComponents(mask: Buffer, width: number, height: number, max: number): Roi[] | null {
+  const seen = new Uint8Array(width * height);
+  const queue = new Int32Array(width * height);
+  const out: Roi[] = [];
+
+  for (let start = 0; start < mask.length; start++) {
+    if (mask[start] === 0 || seen[start]) continue;
+    let head = 0, tail = 0;
+    queue[tail++] = start;
+    seen[start] = 1;
+    let minX = width, minY = height, maxX = -1, maxY = -1;
+    while (head < tail) {
+      const i = queue[head++]!;
+      const x = i % width, y = (i - x) / width;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      const push = (j: number) => { if (!seen[j] && mask[j] !== 0) { seen[j] = 1; queue[tail++] = j; } };
+      if (x > 0) push(i - 1);
+      if (x < width - 1) push(i + 1);
+      if (y > 0) push(i - width);
+      if (y < height - 1) push(i + width);
+    }
+    out.push({ left: minX, top: minY, width: maxX - minX + 1, height: maxY - minY + 1 });
+    if (out.length > max) return null; // za dużo kawałków → niech wywołujący weźmie jeden wspólny bbox
+  }
+  return out.sort((a, b) => b.width * b.height - a.width * a.height);
+}
+
 export type RoiOptions = {
   /** Margines kontekstu wokół zaznaczenia, jako ułamek dłuższego boku bboxa (model musi widzieć otoczenie). */
   padFrac: number;

@@ -38,10 +38,11 @@ import cors from 'cors';
 import helmet from 'helmet';
 import multer from 'multer';
 import sharp from 'sharp';
-import { parseMaskPaths, rasterizeMask, maskBBox, expandRoi, coversWholeImage, type Roi, type MaskPaths } from './mask.js';
+import { parseMaskPaths, rasterizeMask, maskBBox, maskComponents, expandRoi, coversWholeImage, type Roi, type MaskPaths } from './mask.js';
 import { BadRequest, ProxyError } from './errors.js';
 import {
-  readImage, maskFromAlpha, softenMask, cropRegion, prefillHoles, upscaleForModel, compositeThroughMask, passthroughJpeg,
+  readImage, maskFromAlpha, softenMask, cropRegion, blankMaskedArea, cropMask,
+  upscaleForModel, compositeThroughMask, passthroughJpeg,
   type Composed, type ImageFacts,
 } from './compose.js';
 
@@ -249,6 +250,11 @@ function runEdit(image: Buffer, prompt: string): Promise<string> {
 /** Model generuje wyraźnie lepiej, gdy wycinek nie jest miniaturką — mały ROI podbijamy przed wysyłką. */
 const MODEL_TARGET_SIDE = 768;
 
+/** GENERATIVE FILL: ile osobnych dziur wypełniamy z osobna (obrót daje maks. 4 rogi). Więcej → jeden wspólny wycinek. */
+const MAX_FILL_PARTS = 4;
+/** …i do której sekundy wolno ZACZĄĆ kolejny przebieg (apka odcina żądanie po 90 s). */
+const FILL_MORE_UNTIL_MS = 45_000;
+
 /** Rozmycie szwu, skalowane do wielkości zaznaczenia: małe zaznaczenie = wąskie przejście, duże = szersze. */
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 const paintedFeather = (bbox: Roi) => clamp(0.05 * Math.min(bbox.width, bbox.height), 2, 16);
@@ -304,13 +310,36 @@ function readMask(raw: unknown): MaskPaths | null {
   return parsed;
 }
 
-/** Wariant dla maski malowanej palcem (JSON z apki): rasteryzacja → [[maskedEdit]]. */
+/**
+ * Wariant dla maski malowanej palcem (JSON z apki): rasteryzacja → [[maskedEdit]].
+ *
+ * ⚠️ Zamalowany obszar jest WYMAZYWANY z wycinka przed wysyłką do modelu ([[blankMaskedArea]]).
+ * Bez tego model dostawał nietknięty kadr i sam prompt — nie wiedział, gdzie jest zaznaczenie:
+ * MAGIC ERASE oddawał wycinek bez zmian („kasowanie nic nie robi"), a TEXT TO IMAGE malował obiekt
+ * obok maski, więc po kompozycji wychodził poza zaznaczenie. Zgłoszone z produkcji 2026-08-04.
+ */
 async function maskedEditFromPaths(image: Buffer, paths: NonNullable<ReturnType<typeof parseMaskPaths>>, prompt: string): Promise<Composed> {
   const facts = await readImage(image);
   const mask = rasterizeMask(paths, facts.width, facts.height);
   const bbox = maskBBox(mask, facts.width, facts.height);
   if (!bbox) throw new BadRequest('empty selection — nothing to edit');
-  return maskedEdit(image, facts, mask, prompt, paintedFeather(bbox));
+  const sigma = paintedFeather(bbox);
+  return maskedEdit(image, facts, mask, prompt, sigma, blankPrepare(mask, facts, sigma));
+}
+
+/** `prepare` dla [[maskedEdit]]: wymaż zaznaczenie z wycinka, zanim pójdzie do modelu ([[blankMaskedArea]]). */
+const blankPrepare = (mask: Buffer, size: { width: number; height: number }, sigma: number) =>
+  async (crop: Buffer, roi: Roi): Promise<Buffer> =>
+    blankMaskedArea(crop, await cropMask(mask, size, roi), roi.width, roi.height, sigma);
+
+/** Kopia maski ograniczona do jednego prostokąta (reszta wyzerowana) — jeden spójny obszar do wypełnienia. */
+function cutMask(mask: Buffer, size: { width: number; height: number }, roi: Roi): Buffer {
+  const out = Buffer.alloc(size.width * size.height);
+  for (let y = roi.top; y < roi.top + roi.height; y++) {
+    const row = y * size.width;
+    mask.copy(out, row + roi.left, row + roi.left, row + roi.left + roi.width);
+  }
+  return out;
 }
 
 /** Odpowiedź apce: gotowy obraz (kompozycja proxy) zamiast URL-a deAPI. */
@@ -342,7 +371,12 @@ function sendUpstreamError(res: express.Response, e: unknown, where: string) {
 // EDYCJA PROMPTEM — obraz + instrukcja użytkownika (EN). Z `mask_paths` = INPAINTING (zmiana tylko
 // w zamalowanym obszarze); bez maski = edycja całego obrazu (i tak zachowanie starszych wydań apki).
 // Sufiks o kompozycji pomaga modelowi trzymać kadr wycinka, żeby szew z oryginałem był niewidoczny.
-const inpaintPrompt = (p: string) => `${p}. Keep the framing, lighting, colour and perspective of the photo unchanged.`;
+// Prompt MUSI wskazać modelowi wymazaną łatę jako miejsce pracy — inaczej maluje żądaną rzecz gdzie
+// indziej w kadrze wycinka, a kompozycja przez maskę pokazuje z tego tylko przypadkowy fragment.
+const inpaintPrompt = (p: string) =>
+  `The blurred, smeared patch marks the only area you may change. Paint exactly this into it: ${p}. ` +
+  'Blend it naturally with the surrounding photo and keep the rest of the crop, its framing, lighting, ' +
+  'colour and perspective completely unchanged.';
 
 app.post('/api/v1/image-edits', upload.single('image'), async (req, res) => {
   const prompt = String(req.body?.prompt ?? '').trim();
@@ -392,8 +426,28 @@ app.post('/api/v1/image-fills', upload.single('image'), async (req, res) => {
     // przemalowałaby zdjęcie bez powodu (i za kredyty), a to jest dokładnie ten bug, który tu naprawiamy.
     if (!maskBBox(mask, facts.width, facts.height)) return res.json(imageBody(await passthroughJpeg(image)));
     const sigma = alphaFeather(facts);
-    const composed = await maskedEdit(image, facts, mask, FILL_PROMPT, sigma, (crop, roi) => prefillHoles(crop, roi.width, roi.height, sigma));
-    res.json(imageBody(composed));
+
+    // KAŻDA DZIURA OSOBNO. Obrót kadru zostawia dziury w kilku rogach; jeden wspólny bbox obejmuje wtedy
+    // prawie cały kadr, więc model przerysowywał CAŁĄ scenę i rogi wypełniał treścią z własnej wersji
+    // zdjęcia („nie pasuje do obrotu", zgłoszone z produkcji). Osobny wycinek na róg = lokalne zadanie
+    // z prawdziwym otoczeniem. Kolejne przejścia idą na wyniku poprzedniego (alfa już niepotrzebna —
+    // maski policzyliśmy z oryginału, a wymazywanie obszaru jej nie wymaga).
+    const parts = maskComponents(mask, facts.width, facts.height, MAX_FILL_PARTS);
+    const masks = parts && parts.length > 1 ? parts.map((p) => cutMask(mask, facts, p)) : [mask];
+    const started = Date.now();
+    let current = image;
+    let done = 0;
+    for (const part of masks) {
+      // nie zaczynaj kolejnego przebiegu, jeśli nie zdąży przed 90-sekundowym limitem apki —
+      // lepiej oddać częściowo wypełnione zdjęcie niż TIMEOUT i zero efektu
+      if (done && Date.now() - started > FILL_MORE_UNTIL_MS) {
+        console.warn(`[image-fills] budżet czasu — wypełniono ${done}/${masks.length} obszarów`);
+        break;
+      }
+      current = (await maskedEdit(current, facts, part, FILL_PROMPT, sigma, blankPrepare(part, facts, sigma))).buffer;
+      done++;
+    }
+    res.json(imageBody({ buffer: current, mime: 'image/jpeg' }));
   } catch (e) {
     sendUpstreamError(res, e, 'image-fills');
   }
@@ -422,9 +476,13 @@ app.post('/api/v1/upscale', upload.single('image'), async (req, res) => {
 // MAGIC ERASE — usuwa zamalowany obiekt i domalowuje tło. Z `mask_paths` edycja jest zawężona do
 // zaznaczenia (kadr wokół niego + kompozycja); bez maski leci dawna, ogólna wersja — tak działają
 // wydania apki sprzed maski i nie chcemy im psuć funkcji.
+// Obiekt jest już WYMAZANY z wycinka (rozmyta smuga), więc modelowi zostaje samo odtworzenie tła —
+// dokładnie to samo zadanie, co przy GENERATIVE FILL. Dawny prompt („usuń niechciany obiekt") kazał
+// modelowi szukać czegoś, czego w wycinku już nie ma, i najczęściej oddawał kadr bez zmian.
 const ERASE_PROMPT =
-  'Remove the main unwanted object, person or distracting element in this crop and seamlessly fill the area by ' +
-  'naturally extending the surrounding background. Keep the rest of the photo untouched, matching lighting, texture and perspective.';
+  'The blurred, smeared patch is a placeholder where an object was removed. Repaint it so it seamlessly ' +
+  'continues the surrounding background with matching detail, texture, colour, lighting and perspective. ' +
+  'Do not add any new object. Keep the rest of the crop unchanged.';
 
 app.post('/api/v1/image-erase', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'missing "image" file' });

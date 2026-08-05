@@ -9,8 +9,8 @@
  * deployowanym na Railway.
  */
 import sharp from 'sharp';
-import { parseMaskPaths, rasterizeMask, maskBBox, expandRoi, coversWholeImage, DEFAULT_ROI, type MaskPaths } from './mask.js';
-import { softenMask, compositeThroughMask, maskFromAlpha, readImage as readImageFacts, fillHolesNearest, prefillHoles } from './compose.js';
+import { parseMaskPaths, rasterizeMask, maskBBox, maskComponents, expandRoi, coversWholeImage, DEFAULT_ROI, type MaskPaths } from './mask.js';
+import { softenMask, compositeThroughMask, maskFromAlpha, readImage as readImageFacts, fillHolesNearest, blankMaskedArea } from './compose.js';
 
 let failed = 0;
 function check(name: string, cond: boolean, detail = ''): void {
@@ -214,7 +214,9 @@ const rgbaHole = await sharp(withHole).toColorspace('srgb').ensureAlpha().raw().
 const nearest = fillHolesNearest(rgbaHole, 200, 160);
 check('dziura dostaje kolor sąsiada, nie czerń', (nearest[(20 * 200 + 20) * 3 + 1] ?? 0) > 150, `G=${nearest[(20 * 200 + 20) * 3 + 1]}`);
 check('treść poza dziurą nietknięta', (nearest[(100 * 200 + 150) * 3 + 1] ?? 0) > 150);
-const prefilled = await prefillHoles(withHole, 200, 160, 4);
+// tak samo jak w produkcji: maska z alfy → wymazanie obszaru z wycinka przed wysyłką do modelu
+const holeMask = await maskFromAlpha(withHole, 200, 160);
+const prefilled = await blankMaskedArea(withHole, holeMask, 200, 160, 4);
 const preStats = await sharp(prefilled).extract({ left: 5, top: 5, width: 80, height: 60 }).stats();
 check('wycinek dla modelu nie ma czarnego kwadratu', (preStats.channels[1]?.mean ?? 0) > 150, String(Math.round(preStats.channels[1]?.mean ?? 0)));
 check('wycinek dla modelu jest nieprzezroczysty', !(await readImageFacts(prefilled)).hasAlpha);
@@ -223,6 +225,47 @@ check('wycinek dla modelu jest nieprzezroczysty', !(await readImageFacts(prefill
 const allClear = await sharp({ create: { width: 8, height: 8, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer();
 const allClearRaw = await sharp(allClear).toColorspace('srgb').ensureAlpha().raw().toBuffer();
 check('w pełni przezroczysty obraz nie wywraca zalepiania', fillHolesNearest(allClearRaw, 8, 8).length === 8 * 8 * 3);
+
+// ── wymazanie zaznaczenia przed wysyłką do modelu (MAGIC ERASE / TEXT TO IMAGE) ──────────────────
+// Bez tego model nie wie, gdzie jest maska: erase oddaje kadr bez zmian, a inpaint maluje obok.
+console.log('blankMaskedArea');
+const W2 = 120, H2 = 90;
+// tło zielone + wyraźny czerwony obiekt, który maska ma wymazać
+const objMask = Buffer.alloc(W2 * H2);
+for (let y = 30; y < 60; y++) for (let x = 40; x < 80; x++) objMask[y * W2 + x] = 255;
+const photo2 = await sharp({ create: { width: W2, height: H2, channels: 3, background: { r: 40, g: 160, b: 60 } } })
+  .composite([{ input: await sharp({ create: { width: 40, height: 30, channels: 3, background: { r: 220, g: 30, b: 30 } } }).png().toBuffer(), left: 40, top: 30 }])
+  .png().toBuffer();
+const blanked = await blankMaskedArea(photo2, objMask, W2, H2, 3);
+const blankedRaw = await sharp(blanked).toColorspace('srgb').removeAlpha().raw().toBuffer();
+const pixAt = (x: number, y: number) => ({ r: blankedRaw[(y * W2 + x) * 3] ?? 0, g: blankedRaw[(y * W2 + x) * 3 + 1] ?? 0 });
+const midPix = pixAt(60, 45), cornerPix = pixAt(10, 10);
+check('obiekt spod maski zniknął (nie ma już czerwieni)', midPix.r < 120, `R=${midPix.r}`);
+check('w miejscu maski jest kolor tła, nie czerń', midPix.g > 100, `G=${midPix.g}`);
+check('piksele poza maską nietknięte', cornerPix.r === 40 && cornerPix.g === 160, `${cornerPix.r},${cornerPix.g}`);
+check('wycinek dla modelu jest nieprzezroczysty', !(await readImageFacts(blanked)).hasAlpha);
+let blankMismatch = false;
+try { await blankMaskedArea(photo2, Buffer.alloc(10), W2, H2, 3); } catch { blankMismatch = true; }
+check('maska w złym rozmiarze → błąd, nie ciche wysłanie kadru bez zmian', blankMismatch);
+
+// ── spójne obszary maski (GENERATIVE FILL wypełnia każdy róg osobno) ─────────────────────────────
+console.log('maskComponents');
+const corners = Buffer.alloc(W * H);
+const paint = (x0: number, y0: number, w: number, h: number) => {
+  for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) corners[y * W + x] = 255;
+};
+paint(0, 0, 30, 20); paint(W - 40, 0, 40, 25); paint(0, H - 15, 20, 15); // trzy rogi
+const comps = maskComponents(corners, W, H, 4);
+check('trzy dziury → trzy obszary', comps?.length === 3, String(comps?.length));
+check('największy obszar pierwszy', (comps?.[0]?.width ?? 0) * (comps?.[0]?.height ?? 0) === 40 * 25);
+check('bbox obszaru dokładny', comps?.[2]?.left === 0 && comps?.[2]?.top === H - 15 && comps?.[2]?.width === 20);
+// jeden wspólny bbox obejmowałby PRAWIE CAŁY kadr — to jest dokładnie ten bug z rogami po obrocie
+const all = maskBBox(corners, W, H)!;
+check('wspólny bbox obejmuje niemal cały kadr (dlaczego rozbijamy)', all.width * all.height > 0.9 * W * H);
+check('brak dziur → pusta lista', maskComponents(Buffer.alloc(W * H), W, H, 4)?.length === 0);
+const scattered = Buffer.alloc(W * H);
+for (let k = 0; k < 12; k++) scattered[(20 + k * 15) * W + (20 + k * 25)] = 255; // 12 osobnych kropek
+check('za dużo kawałków → null (jeden wspólny wycinek)', maskComponents(scattered, W, H, 4) === null);
 
 console.log(failed === 0 ? '\nWSZYSTKO OK' : `\n${failed} NIEUDANYCH ASERCJI`);
 process.exit(failed === 0 ? 0 : 1);

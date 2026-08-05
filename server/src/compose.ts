@@ -146,14 +146,48 @@ export function fillHolesNearest(rgba: Buffer, width: number, height: number): B
 }
 
 /**
- * Wycinek gotowy dla modelu przy GENERATIVE FILL: dziury zalepione ([[fillHolesNearest]]) i dodatkowo
- * zmiękczone rozmyciem — samo rozciągnięcie sąsiada zostawia promieniste smugi. Rozmycie trafia WYŁĄCZNIE
- * w dziury; realna treść zdjęcia zostaje ostra, żeby model nie odwzorował rozmycia w wyniku.
+ * Wycinek maski w układzie ROI (1 kanał, 255 = obszar do zmiany). Potrzebny, gdy trzeba coś zrobić
+ * z samą zamalowaną częścią wycinka — np. wymazać ją przed wysyłką do modelu ([[blankMaskedArea]]).
  */
-export async function prefillHoles(crop: Buffer, width: number, height: number, sigma: number): Promise<Buffer> {
+export function cropMask(mask: Buffer, size: { width: number; height: number }, roi: Roi): Promise<Buffer> {
+  return gray1(sharp(mask, rawGray(size.width, size.height)).extract(roi), roi.width * roi.height);
+}
+
+/**
+ * WYMAZUJE zamalowany obszar z wycinka, który leci do modelu: piksele spod maski zastępuje kolorem
+ * najbliższego sąsiada spoza niej i rozmywa (dokładnie ta sama maszyneria, co zalepianie dziur w FILL).
+ *
+ * PO CO — to jest sedno poprawki na „erase nic nie robi" i „inpaint maluje obok zaznaczenia".
+ * deAPI nie ma maskowanego inpaintingu, więc model dostawał NIETKNIĘTY wycinek i sam prompt: nie miał
+ * pojęcia, gdzie jest zaznaczenie. Skutki były dwa i oba zgłoszone z produkcji:
+ *   • MAGIC ERASE — model nie widział powodu, żeby cokolwiek usuwać, i oddawał wycinek prawie
+ *     identyczny; po kompozycji przez maskę nie było widać ŻADNEJ zmiany;
+ *   • TEXT TO IMAGE — model malował obiekt tam, gdzie mu pasowało w kadrze wycinka, a my przycinaliśmy
+ *     wynik maską, więc obiekt wychodził poza zaznaczenie albo lądował obok.
+ * Po wymazaniu model widzi w tym miejscu rozmytą smugę — czyli oczywiste „tu czegoś brakuje" — i
+ * domalowuje dokładnie tam. Tak od początku działał GENERATIVE FILL (dziury z alfy) i to jedyna
+ * z trzech tras, która nie miała tego problemu.
+ */
+export async function blankMaskedArea(
+  crop: Buffer, maskRoi: Buffer, width: number, height: number, sigma: number,
+): Promise<Buffer> {
+  const rgb = await sharp(crop).toColorspace('srgb').removeAlpha().raw().toBuffer();
+  if (rgb.length !== width * height * 3) throw new ProxyError('blank: wycinek nie jest RGB w oczekiwanym rozmiarze');
+  if (maskRoi.length !== width * height) throw new ProxyError('blank: maska nie pasuje do wycinka');
+  // „dziura" = piksel pod maską; dalej idzie ta sama ścieżka co przy FILL (najbliższy sąsiad + rozmycie)
+  const rgba = Buffer.alloc(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    rgba[i * 4] = rgb[i * 3] ?? 0;
+    rgba[i * 4 + 1] = rgb[i * 3 + 1] ?? 0;
+    rgba[i * 4 + 2] = rgb[i * 3 + 2] ?? 0;
+    rgba[i * 4 + 3] = (maskRoi[i] ?? 0) >= 128 ? 0 : 255;
+  }
+  return prefillFromRgba(rgba, width, height, sigma);
+}
+
+/** Wspólny rdzeń zalepiania: RGBA (alfa 0 = do zalepienia) → PNG bez alfy, gotowy dla modelu. */
+async function prefillFromRgba(rgba: Buffer, width: number, height: number, sigma: number): Promise<Buffer> {
   const raw3 = { raw: { width, height, channels: 3 as const } };
-  const rgba = await sharp(crop).toColorspace('srgb').ensureAlpha().raw().toBuffer();
-  if (rgba.length !== width * height * 4) throw new ProxyError('prefill: wycinek nie jest RGBA w oczekiwanym rozmiarze');
   const filled = fillHolesNearest(rgba, width, height);
   const smoothed = await sharp(filled, raw3).blur(Math.max(MIN_SIGMA, sigma)).toColorspace('srgb').removeAlpha().raw().toBuffer();
   if (smoothed.length !== filled.length) throw new ProxyError('prefill: nieoczekiwana liczba kanałów po rozmyciu');
