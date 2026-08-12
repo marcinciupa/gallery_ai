@@ -19,7 +19,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APK="$ROOT/android/app/build/outputs/apk/release/app-release.apk"
-SHARE='\\5600G\@5600g'
+SHARE='\\5600G\@work'
 FALLBACK_DIR="/mnt/c/Users/glue0/Downloads"
 KEEP="${APK_KEEP:-3}"
 
@@ -93,12 +93,31 @@ else
   WHERE="$FALLBACK_DIR"
 fi
 echo "✅ $NAME → $WHERE  ($(du -h "$APK" | cut -f1), zbudowany $(date -d "@$(stat -c %Y "$APK")" '+%H:%M'))"
-
-# Sprzątanie: zostaw KEEP najnowszych buildów TESTOWYCH (każdy ~83 MB). Wydaniowych (bez `-t<N>`)
-# nie ruszamy — mogą być potrzebne później.
-OLD=$(echo "$LISTING" | sed -n 's/^\(gallery_ai-.*-t\([0-9]\+\)\.apk\)$/\2 \1/p' | sort -rn | tail -n +"$KEEP" | cut -d' ' -f2)
-for f in $OLD; do
-  [ "$f" = "$NAME" ] && continue
-  if [ "$USE_SHARE" = 1 ]; then ps "Remove-Item -LiteralPath '$SHARE\\$f' -Force" >/dev/null; else rm -f "$FALLBACK_DIR/$f"; fi
-  echo "   🗑  usunięto $f"
-done
+# ── SPRZĄTANIE ──────────────────────────────────────────────────────────────────────────────────
+# Zostaw KEEP najnowszych APK, resztę skasuj. Klucz sortowania: (wersja, numer -t). Plik wydaniowy
+# danej wersji dostaje -t = 0, bo powstaje jako PIERWSZY build tej wersji — jej iteracje testowe są
+# od niego nowsze. `sort -g` radzi sobie z różną liczbą cyfr (0.9635 < 0.971).
+#
+# ZMIANA 2026-08-12 (polecenie użytkownika — udział zarastał i przenosił pliki ręcznie): sprzątamy
+# TAKŻE buildy wydaniowe. Wcześniej wzorzec łapał wyłącznie `-t<N>`, więc KAŻDY build wydaniowy
+# zostawał na udziale na zawsze. Przy okazji naprawione dwa błędy starej wersji: sortowanie szło po
+# samym numerze `-t` w poprzek wersji (`0.972-t5` wypadało nowsze niż `0.973-t1`, więc kasowany bywał
+# świeższy plik), a `tail -n +$KEEP` zostawiał KEEP-1 plików zamiast KEEP.
+#
+# Wydaniowy build BIEŻĄCEJ wersji jest chroniony przed skasowaniem — inaczej seria buildów testowych
+# wyparłaby go z listy i następny build tej samej wersji znów dostałby nazwę wydaniową.
+# APK_KEEP=0 wyłącza sprzątanie.
+if [ "$KEEP" -gt 0 ]; then
+  # LISTING pobrano PRZED kopiowaniem — dokładamy świeżo dostarczony plik, żeby KEEP oznaczało
+  # liczbę APK, która ZOSTANIE na udziale (inaczej zostawałoby KEEP+1).
+  OLD=$(printf '%s\n%s\n' "$LISTING" "$NAME" | sed -n \
+        -e "s/^gallery_ai-\([0-9.]\+\)-t\([0-9]\+\)\.apk$/\1 \2 &/p" \
+        -e "s/^gallery_ai-\([0-9.]\+\)\.apk$/\1 0 &/p" \
+      | sort -k1,1gr -k2,2nr | tail -n +$((KEEP + 1)) | awk '{print $3}')
+  for f in $OLD; do
+    [ "$f" = "$NAME" ] && continue
+    [ "$f" = "$RELEASE_NAME" ] && continue # wydaniowy bieżącej wersji zostaje
+    if [ "$USE_SHARE" = 1 ]; then ps "Remove-Item -LiteralPath '$SHARE\\$f' -Force" >/dev/null; else rm -f "$FALLBACK_DIR/$f"; fi
+    echo "   🗑  usunięto $f"
+  done
+fi
