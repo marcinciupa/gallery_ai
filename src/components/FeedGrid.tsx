@@ -12,6 +12,7 @@ import { Image as ExpoImage } from 'expo-image';
 import Svg, { Polygon } from 'react-native-svg';
 import { color, font, screen } from '../theme/tokens';
 import { scrollFlag } from './PerfHud';
+import { VideoBadge } from './VideoBadge';
 
 export const FEED_GAP = 8;
 
@@ -120,6 +121,8 @@ const FeedTile = memo(function FeedTile({
           ) : null}
         </>
       ) : null}
+      {/* wideo: trójkąt play + długość (lewy-dolny róg) */}
+      {images ? <VideoBadge source={source} chrome={chrome} /> : null}
       {/* checkbox trybu zaznaczania — lewy-górny róg */}
       {check != null ? (
         // Checkbox bez ptaszka (Figma 450:1861): niezaznaczony = fosforowy, ZAZNACZONY = ciemny.

@@ -30,6 +30,16 @@ npm run web        # podgląd w przeglądarce (http://localhost:8081)
 ```
 Realny skeuomorfizm (tekstura, haptyka, tilt) tylko natywnie (Expo Go / dev build). Web = podgląd UI.
 
+**Build APK i QA — jedną komendą** (bliźniaki skryptów z `rec_ai/mobile/tools`, ta sama konwencja wersji):
+- `npm run build` → tsc → testy → prebuild (gdy trzeba) → **re-pin Gradle 8.14.3 + `local.properties`**
+  (`expo prebuild` je kasuje) → `assembleRelease` → sprawdzenie, że numer wersji NAPRAWDĘ jest w bundlu
+  (gradle bywa no-op i zostawia stary APK) → `tools/deliver-apk.sh`. Flagi: `--bump` (+0.001),
+  `--half` (+0.0005), `--verify a,b` (napisy do sprawdzenia w bundlu), `--no-deliver`, `--release`.
+  Procedury NIE odtwarzać ręcznie — skrypt po to jest.
+- `npm run check` → `typecheck` + `test`. Runner testów (`tools/run-tests.mjs`) jest gotowy, ale
+  `tools/test-*.mjs` jeszcze nie ma: `src/lib/*` w tym projekcie ciągnie react-native/expo, więc testowalna
+  offline jest dopiero logika wydzielona do czystych modułów (wzorzec: `rec_ai/mobile/src/lib/prompts.ts`).
+
 ## Kolejność budowy (z DESIGN_SYSTEM.md §11d)
 1. Warstwa 0 + rama+slot + device/fullscreen (§1, §2, §2b) — postaw „martwy" korpus z pustym ekranem.
 2. Kontekstowa klawiatura + kompozytor `App.tsx` (§4, §8), tryby BROWSE / VIEWER / SETTINGS (mock).
@@ -100,6 +110,25 @@ Realny skeuomorfizm (tekstura, haptyka, tilt) tylko natywnie (Expo Go / dev buil
 - **Jak przetestować AAB bez telefonu**: `bundletool build-apks --mode=universal` → `adb install`; emulator
   `Pixel_7_API_34` jest w SDK. Uwaga: AVD bywa na granicy miejsca — `INSTALL_FAILED_INSUFFICIENT_STORAGE`
   leczy `pm trim-caches`.
+- **Emulator stoi po stronie WINDOWS — odpalać przez `~/tools/android-emu-win.sh`** (globalny, wspólny
+  z rec_ai; `--apk <plik>` instaluje i startuje, `--metro` robi `adb reverse 8081`, `--no-window`,
+  `--cold`, `--stop`). `adb` z WSL wołamy przez **`~/tools/adbw.sh`** — to windowsowe `adb.exe` z tłumaczeniem
+  ścieżek WSL→Windows (`install`, `push`, `pull`); `exec-out screencap` działa normalnie.
+  SDK: `C:\Users\<user>\Android\Sdk`, AVD: `C:\Users\<user>\.android\avd\Pixel_7_API_34.avd` (6 rdzeni, 4 GB, `hw.gpu.mode=host`).
+  **Dlaczego przeniesione (pomiary 2026-08-06, ten sam AVD i APK — rec_ai 0.972):**
+  - **WSL/WSLg: GPU nieosiągalne.** `-gpu host` (Mesa/D3D12 przez `/dev/dxg`) startuje, ale proces **pada**
+    zaraz po starcie systemu; Vulkan → `VK_ERROR_INCOMPATIBLE_DRIVER` (brak `/dev/dri`). Zostawał
+    `swangle_indirect` = rendering na CPU: **~550 ms/klatkę** nawet w pół-rozdzielczości → ~2 fps.
+    Do tego okno X11 pod RDP **kradło fokus** (dwa kliknięcia w terminal).
+  - **Windows: WHPX + `-gpu host` → realny GPU** („Android Emulator OpenGL ES Translator (NVIDIA GeForce
+    RTX 3070 Ti Laptop GPU)"): **20–34 ms/klatkę w natywnym 1080x2400**, GPU p50 = 9 ms. ~20× szybciej,
+    bez kradzenia fokusu, bez trybu pół-rozdzielczości i bez hacków na `libpulse`.
+  - Warunek: `HypervisorPlatform` (WHPX) włączony w Windowsie (`dism … /FeatureName:HypervisorPlatform`
+    z admina + restart). Weryfikacja: `emulator.exe -accel-check`.
+  - `--metro` działa: reverse rejestruje windowsowy serwer adb → `localhost:8081` Windowsa → (localhostForwarding
+    WSL2) → Metro w WSL. Sprawdzone e2e requestem z emulatora do serwera HTTP w WSL.
+  Wariant WSL-owy (`~/tools/android-emu.sh`, obrazy systemu w WSL, `~/.local/lib/emu-deps`) został **skasowany**
+  (odzyskane ~9 GB). Emulator nadal służy do **layoutu i logiki**; ocena haptyki/płynności — telefon.
 
 ## Kluczowe decyzje designowe (podjęte)
 - **Tryb wyświetlania ekranu = wybór użytkownika, 3 poziomy** (§11b.1): IMMERSIVE (B&W+fosfor+matryca),

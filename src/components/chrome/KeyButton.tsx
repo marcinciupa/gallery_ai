@@ -15,10 +15,14 @@ import type { KeyIconName } from '../icons/keyIcons.gen';
 const LABEL_ICON: Record<string, KeyIconName> = {
   BACK: 'back', CLOSE: 'close', EXIT: 'exit', MENU: 'menu', 'CLOSE\nMENU': 'close', CONFIRM: 'confirm',
   CANCEL: 'close', SKIP: 'skip', START: 'start', FOLDERS: 'folders', MOMENTS: 'moments', FEED: 'feed',
-  TOGGLE: 'toggle', FULLSCREEN: 'fullscreen', EDIT: 'edit', 'CLOSE\nEDIT': 'close_edit', SAVE: 'save',
+  TOGGLE: 'toggle_left', FULLSCREEN: 'fullscreen', EDIT: 'edit', 'CLOSE\nEDIT': 'close_edit', SAVE: 'save',
   RESET: 'reset', UNDO: 'undo', SEND: 'send', 'FILL\nAI': 'fill', 'KEY-\nBOARD': 'keyboard', KEYBOARD: 'keyboard',
   TRASH: 'trash', RESTORE: 'restore', DELETE: 'delete', INFO: 'info', 'HIDE\nINFO': 'hide_info',
   APPLY: 'confirm', SIZE: 'cols2',
+  // z rozszerzonego zestawu (2026-08-15): CHANGE ma wreszcie własny glif zamiast samego tekstu
+  CHANGE: 'change',
+  // wideo (2026-09-02): odtwarzanie w podglądzie
+  PLAY: 'start', PAUSE: 'pause',
 };
 import { useTheme } from '../../theme/ThemeContext';
 import { useTiltCtx } from '../../theme/TiltContext';

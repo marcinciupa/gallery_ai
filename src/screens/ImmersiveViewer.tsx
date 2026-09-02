@@ -326,7 +326,7 @@ export function ImmersiveViewer({
           <View style={{ paddingHorizontal: 16, paddingTop: 12, gap: 8 }}>
             {/* NAZWA PLIKU — wyśrodkowana, tuż nad sekcją INFO */}
             <Text numberOfLines={1} style={{ ...val, textAlign: 'center' }}>{truncName(info.filename)}</Text>
-            <InfoPanel dims={info.dims} fileSize={info.fileSize} format={info.format} aiTools={info.aiTools} aiPrompt={info.aiPrompt} aiUpscale={info.aiUpscale} prov={info.prov} />
+            <InfoPanel dims={info.dims} fileSize={info.fileSize} format={info.format} aiTools={info.aiTools} aiPrompt={info.aiPrompt} aiUpscale={info.aiUpscale} prov={info.prov} duration={info.duration} />
           </View>
           <View style={{ flex: 1 }} />
           <View style={{ height: CLOSE_BAND, alignItems: 'center', justifyContent: 'center' }}>

@@ -1,6 +1,6 @@
 /**
  * KeyIcon — ikona klawisza (Figma component set 496:24601), renderowana z danych `keyIcons.gen.ts`.
- * Ikony liniowe 32×32 (stroke 4, round cap). `color` = kolor klawisza (domyślnie phosphor; na klawiszu
+ * Ikony liniowe 32×32 (stroke ICON_STROKE, round cap). `color` = kolor klawisza (domyślnie phosphor; na klawiszu
  * `primary`/`highRisk` podajemy dark21, jak robi to tekst). GLOW = fosforowa poświata: warstwa pod spodem
  * z grubszym, półprzezroczystym stroke'iem (react-native-svg nie ma filtrów, więc halo robimy duplikatem).
  */
@@ -8,6 +8,12 @@ import { View } from 'react-native';
 import Svg, { Path, Rect, Circle, G } from 'react-native-svg';
 import { screen } from '../../theme/tokens';
 import { KEY_ICONS, type IconEl, type KeyIconName } from './keyIcons.gen';
+
+// Grubość ścieżki ikony w siatce 32×32 (Figma dawała 4). 3,8 — wspólna wartość dla rec_ai i gallery_ai,
+// żeby ikonografia obu apek wyglądała identycznie. Przy renderze 26 px daje ~3,09 px na ekranie.
+const ICON_STROKE = 3.6;
+const GLOW_STROKE = ICON_STROKE + 2; // halo zawsze o 2 szersze od ścieżki
+const GLOW_OPACITY = 0.15; // krycie poświaty — wspólne dla rec_ai i gallery_ai
 
 function Prims({ els, stroke, width }: { els: IconEl[]; stroke: string; width: number }) {
   return (
@@ -35,13 +41,13 @@ export function KeyIcon({ name, size = 26, color = screen.olive.primary, glow = 
       {glow ? (
         <View pointerEvents="none" style={{ position: 'absolute', inset: 0 } as any}>
           <Svg width={size} height={size} viewBox="0 0 32 32">
-            <G opacity={0.22}><Prims els={els} stroke={color} width={6} /></G>
+            <G opacity={GLOW_OPACITY}><Prims els={els} stroke={color} width={GLOW_STROKE} /></G>
           </Svg>
         </View>
       ) : null}
-      {/* crisp stroke — grubość jak w projekcie (4 na 32) */}
+      {/* crisp stroke — grubość jak w projekcie (ICON_STROKE na 32) */}
       <Svg width={size} height={size} viewBox="0 0 32 32">
-        <Prims els={els} stroke={color} width={4} />
+        <Prims els={els} stroke={color} width={ICON_STROKE} />
       </Svg>
     </View>
   );

@@ -20,11 +20,14 @@ export type MediaStatus = 'idle' | 'loading' | 'denied' | 'ready' | 'error' | 'u
 // ⚠️ PERF: wymiary trzymamy pod NIE-standardowymi kluczami mediaWidth/mediaHeight, a NIE width/height — bo width/height
 // to rozpoznawane pola ImageSourcePropType i expo-image dekodowałoby wtedy KAŻDĄ miniaturę w pełnej rozdzielczości
 // oryginału → zapaść pamięci/FPS. mediaWidth/mediaHeight/filename są ignorowane przez expo-image (jak raw/ai).
-export type PhotoSource = { uri: string; raw?: boolean; ai?: boolean; mediaWidth?: number | null; mediaHeight?: number | null; filename?: string | null; creationTime?: number | null; modificationTime?: number | null; albumId?: string };
+export type PhotoSource = { uri: string; raw?: boolean; ai?: boolean; video?: boolean; duration?: number | null; mediaWidth?: number | null; mediaHeight?: number | null; filename?: string | null; creationTime?: number | null; modificationTime?: number | null; albumId?: string };
 
 // Formaty RAW (po rozszerzeniu nazwy pliku). Detekcja best-effort — filename z metadanych, gdy dostępny.
 const RAW_RE = /\.(dng|arw|cr[23w]|nef|nrw|orf|raf|rw2|pef|sr[2fw]|raw|x3f|3fr|fff|iiq|kdc|mos|mrw|dcr|k25)$/i;
 const isRaw = (name?: string | null) => !!name && RAW_RE.test(name);
+// WIDEO: `mediaType` z metadanych ('video' w nowym API). Trzymamy własną flagę, bo do siatki i podglądu
+// idzie już PhotoSource, a nie surowy AssetMetadata.
+const isVideo = (m: any) => String(m?.mediaType ?? '').toLowerCase() === 'video';
 // Jednorazowa prośba o ACCESS_MEDIA_LOCATION (runtime) — patrz placeOfAsset.
 let mediaLocAsked = false;
 
@@ -33,7 +36,7 @@ let mediaLocAsked = false;
 // folderu i wyglądało na zgubione. Podstawiamy wtedy datę modyfikacji (zawsze jest), a surową modyfikację
 // trzymamy osobno pod `modificationTime` — to po niej sortuje SORT: ADDED (świeżo przeniesione i skopiowane
 // pliki mają ją najnowszą, więc od razu są na górze; DATE_TAKEN przy przenoszeniu się NIE zmienia).
-const flag = (m: any, tags: Set<string>): PhotoSource => ({ uri: m.id, raw: isRaw(m.filename), ai: tags.has(m.id), mediaWidth: m.width ?? null, mediaHeight: m.height ?? null, filename: m.filename ?? null, creationTime: m.creationTime ?? m.modificationTime ?? null, modificationTime: m.modificationTime ?? null });
+const flag = (m: any, tags: Set<string>): PhotoSource => ({ uri: m.id, raw: isRaw(m.filename), ai: tags.has(m.id), video: isVideo(m), duration: m.duration ?? null, mediaWidth: m.width ?? null, mediaHeight: m.height ?? null, filename: m.filename ?? null, creationTime: m.creationTime ?? m.modificationTime ?? null, modificationTime: m.modificationTime ?? null });
 // count opcjonalny — świadomie NIE liczymy zdjęć na starcie (skan wszystkich metadanych = lawina GC = jank).
 export type MediaFolder = { id: string; name: string; cover?: ImageSourcePropType; count?: number };
 
@@ -67,7 +70,7 @@ export function useMedia() {
               // tylko OKŁADKA: 1 najnowsze zdjęcie (limit 1) → 1 obiekt metadanych na album (bez skanu liczników)
               const meta = await new ML.Query()
                 .album(a)
-                .eq(ML.AssetField.MEDIA_TYPE, ML.MediaType.IMAGE)
+                .within(ML.AssetField.MEDIA_TYPE, [ML.MediaType.IMAGE, ML.MediaType.VIDEO])
                 .orderBy({ key: ML.AssetField.CREATION_TIME, ascending: false })
                 .limit(1)
                 .exeForMetadata();
@@ -89,7 +92,7 @@ export function useMedia() {
             try {
               const m = await new ML.Query()
                 .album(new ML.Album(f.id))
-                .eq(ML.AssetField.MEDIA_TYPE, ML.MediaType.IMAGE)
+                .within(ML.AssetField.MEDIA_TYPE, [ML.MediaType.IMAGE, ML.MediaType.VIDEO])
                 .exeForMetadata();
               return [f.id, m.length] as const;
             } catch {
@@ -147,7 +150,7 @@ export function useMedia() {
     const tags = await getAiTags();
     const meta = await new ML.Query()
       .album(new ML.Album(albumId))
-      .eq(ML.AssetField.MEDIA_TYPE, ML.MediaType.IMAGE)
+      .within(ML.AssetField.MEDIA_TYPE, [ML.MediaType.IMAGE, ML.MediaType.VIDEO])
       .orderBy({ key: ML.AssetField.CREATION_TIME, ascending: false })
       .exeForMetadata();
     return meta.map((m: any) => flag(m, tags) as ImageSourcePropType);

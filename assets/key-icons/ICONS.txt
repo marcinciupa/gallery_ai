@@ -1,0 +1,108 @@
+ZESTAW IKON KLAWISZY — 68 sztuk
+Figma: file CHrNxWwvF0yGopor9yokmx, component set 496:24601 "icons"
+Siatka 32x32, obrys 3.6 (ustawiany w KeyIcon.tsx, nie w SVG), zakonczenia zaokraglone.
+Regeneracja po zmianie w Figmie:  node tools/gen-key-icons.mjs [sciezka/do/keyIcons.gen.ts]
+
+Legenda kolumny "gdzie":
+  REC      uzywane w rec_ai
+  GAL      uzywane w gallery_ai
+  OBA      uzywane w obu projektach
+  -        w zestawie, nigdzie nie podpiete
+
+
+== NAWIGACJA I STEROWANIE EKRANEM ==
+back            OBA   powrot do poprzedniego widoku (klawisz BACK)
+forward         -     odpowiednik back w druga strone; brak klawisza, ktory by tego potrzebowal
+close           OBA   CLOSE / CANCEL / ABORT / CLOSE MENU
+exit            GAL   wyjscie z aplikacji
+menu            OBA   otwarcie menu
+confirm         OBA   CONFIRM / ACCEPT / YES / APPLY
+skip            OBA   NEXT (rec) / SKIP (gal)
+change          OBA   CHANGE - domyslny klawisz zmiany wartosci w ustawieniach
+settings        REC   wejscie w ustawienia
+fullscreen      OBA   przelaczenie widoku na pelny ekran
+keyboard        OBA   klawiatura systemowa
+
+== TRANSPORT: ODTWARZANIE I NAGRYWANIE ==
+start           OBA   PLAY (rec) / START (gal)
+pause           REC   PAUSE
+stop            REC   STOP
+recorder        REC   REC - wejscie w nagrywanie
+mute            REC   wyciszenie wejscia w nagrywaniu
+unmute          REC   powrot z wyciszenia
+speed_1x        REC   bieg predkosci odtwarzania (klawisz SPEED, ikona jawna)
+speed_1_5x      REC   jw.
+speed_2x        REC   jw.
+speed_3x        REC   jw.
+speed_5x        -     bieg nieuzywany - SPEED_LEVELS konczy sie na 3x
+speed_10x       -     jw.
+elapsed         REC   PLAYBACK TIMER = czas od poczatku
+remaining       REC   PLAYBACK TIMER = czas do konca
+
+== LISTY, WIDOKI, USTAWIENIA ==
+recordings_2    REC   lista nagran (klawisz RECORDINGS)
+recordings      -     starszy wariant tej samej ikony, zastapiony przez recordings_2
+cols2           GAL   siatka 2 kolumny (klawisz SIZE)
+cols3           -     siatka 3 kolumny - wariant nieuzywany
+feed            GAL   widok strumienia
+folders         GAL   widok folderow
+moments         GAL   widok momentow
+toggle_left     OBA   przelacznik OFF (rec: TURN OFF; gal: TOGGLE)
+toggle_right    REC   przelacznik ON (TURN ON)
+handed_left     REC   HANDED = lewa reka
+handed_right    REC   HANDED = prawa reka
+theme           -     wiersz THEME; nie podpiete, bo klawisz musi pokazac KTORY motyw
+language        -     wiersze AI/UI LANGUAGE; jw. - klawisz musi pokazac KTORY jezyk
+space           -     wolne miejsce na nosniku; dzis pokazywane samym tekstem
+
+== AI I TRANSKRYPCJA ==
+ai              REC   TRANSCRIBE / RE-TRANSCRIBE - zlecenie pracy modelowi
+ai_2            -     drugi wariant chipu AI
+ai_chat         REC   ASK AI - rozmowa o notatce
+ai_key_points   REC   KEY POINTS
+summary         REC   SUMMARY
+to_do_list      REC   TASKS
+details         REC   DETAILS
+transcribe      -     mikrofon z linijkami; zastapiony chipem ai (mylil sie z nagrywaniem)
+conversation    -     dialog dwoch osob; kandydat na oznaczenie transkryptu z rozmowcami
+speaker         -     pojedynczy rozmowca
+speakers        -     dwoch rozmowcow; kandydat na wiersz AI SPEAKERS
+paragraph       -     akapity; kandydat na wiersz AI PARAGRAPHS
+
+== EDYCJA (gallery_ai) ==
+edit            GAL   wejscie w edycje
+close_edit      GAL   wyjscie z edycji
+brush           -     narzedzie pedzla
+fill            GAL   FILL AI
+rotate_right    -     obrot w prawo
+reset           OBA   przywrocenie wartosci poczatkowych
+undo            OBA   cofniecie ostatniej akcji
+save            OBA   zapis
+send            OBA   SHARE (rec) / SEND (gal)
+
+== USUWANIE ==
+delete          OBA   usuniecie z potwierdzeniem
+trash           GAL   kosz
+restore         GAL   przywrocenie z kosza
+shred           -     trwale zniszczenie zawartosci kosza
+
+== INFORMACJA ==
+info            REC   INFO / SHOW INFO / SHOW DETAILS
+hide_info       GAL   ukrycie informacji
+
+== PLATFORMA ==
+android         -     znaczek systemu
+apple           -     znaczek systemu
+
+
+PODSUMOWANIE
+  uzywane w rec_ai:      38
+  uzywane w gallery_ai:  27
+  nigdzie nieuzywane:    19
+
+CZTERY POWODY, DLA KTORYCH IKONA BYWA NIEPODPIETA
+  1. wariant zapasowy tego samego znaczenia (recordings, ai_2, cols3, forward)
+  2. funkcja nieistniejaca w apce (speed_5x, speed_10x, brush, rotate_right, shred, android, apple)
+  3. zastapiona lepsza (transcribe -> ai)
+  4. czeka na miejsce w interfejsie (theme, language, space, speaker, speakers, paragraph,
+     conversation) - te pasuja do WIERSZY ustawien, a wiersze nie maja dzis kolumny na ikone

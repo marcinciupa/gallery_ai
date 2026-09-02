@@ -29,9 +29,10 @@ VERSION="$(node -p "require('$ROOT/app.json').expo.version")"
 
 # WALIDATOR KONWENCJI WERSJI — żeby dryf nie wyszedł na udział (patrz reguła bump-version-per-feature).
 # versionCode = round(version×10000), kończy się na 0 (funkcja) lub 5 (POŁÓWKA = mniej znacząca zmiana);
-# versionName = versionCode/10000 z obciętym zerem końcowym (3 cyfry normalnie, 4 z „5" dla połówki).
+# versionName = versionCode/10000 na 3 cyfry po przecinku (4 z „5" dla połówki) — stąd toFixed(4)
+# z obcięciem KOŃCOWEGO zera, a nie toString(): inaczej 9900 dałoby „0.99", a 10000 „1".
 VCODE="$(node -p "require('$ROOT/app.json').expo.android.versionCode")"
-EXP_NAME="$(node -p "(require('$ROOT/app.json').expo.android.versionCode/10000).toString()")"
+EXP_NAME="$(node -p "const c=require('$ROOT/app.json').expo.android.versionCode; const s=(c/10000).toFixed(4); s.endsWith('0')?s.slice(0,-1):s")"
 [ "$VERSION" = "$EXP_NAME" ] || { echo "BŁĄD KONWENCJI: version '$VERSION' ≠ versionCode/10000 ('$EXP_NAME'). Ustaw version='$EXP_NAME' albo popraw versionCode." >&2; exit 1; }
 [ $(( VCODE % 5 )) -eq 0 ] || { echo "BŁĄD KONWENCJI: versionCode $VCODE nie kończy się na 0 (funkcja) ani 5 (połówka). Wyrównaj do najbliższego kroku." >&2; exit 1; }
 

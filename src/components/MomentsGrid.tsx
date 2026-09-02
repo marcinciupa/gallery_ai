@@ -16,6 +16,7 @@ import { Image as ExpoImage } from 'expo-image';
 import Svg, { Polygon } from 'react-native-svg';
 import { packFeed } from './FeedGrid';
 import { color, font, screen } from '../theme/tokens';
+import { VideoBadge } from './VideoBadge';
 
 export const MOMENTS_GAP = 8;
 export const MOMENTS_COLS = 3;
@@ -90,6 +91,8 @@ const MomentTile = memo(function MomentTile({
           {(source as any).raw ? <Text style={badgeTxt}>RAW</Text> : null}
         </View>
       ) : null}
+      {/* wideo: trójkąt play + długość (lewy-dolny róg) */}
+      {images ? <VideoBadge source={source} chrome={chrome} /> : null}
       {check != null ? (
         <View pointerEvents="none" style={{ position: 'absolute', top: 6, left: 6, width: 18, height: 18, borderRadius: 3, borderWidth: 2, borderColor: chrome, backgroundColor: check ? color.dark21 : chrome }} />
       ) : null}

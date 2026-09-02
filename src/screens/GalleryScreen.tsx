@@ -435,6 +435,12 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // swojej starej daty, podczas gdy menedżery plików pokazują go na górze (sortują po modyfikacji).
   const SORTS = ['DATE ↓', 'DATE ↑', 'ADDED ↓', 'NAME A-Z', 'NAME Z-A'] as const;
   const [sortMode, setSortMode] = useState(0);
+  // FILTER MEDIA — co pokazujemy w feedzie i we wnętrzu folderu. Wideo trafiło do biblioteki razem ze
+  // zdjęciami (useMedia pyta o IMAGE + VIDEO), więc filtr jest jedyną drogą, żeby zobaczyć same filmy
+  // albo same zdjęcia. Kolejność cyklu jak w SORT: klawisz przełącza, menu zostaje otwarte.
+  const MEDIA_FILTERS = ['ALL', 'PHOTOS', 'VIDEOS'] as const;
+  const [mediaFilter, setMediaFilter] = useState(0);
+  const passesMedia = (s: any) => mediaFilter === 0 || (mediaFilter === 2 ? !!s?.video : !s?.video);
   const feedRaw = useRef<ImageSourcePropType[]>([]);
   const photosRaw = useRef<ImageSourcePropType[]>([]);
   const sortPhotos = (arr: ImageSourcePropType[], mode: number): ImageSourcePropType[] => {
@@ -636,10 +642,16 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // WIDOKI filtrowane koszem: feed/wnętrze folderu bez elementów w koszu; wnętrze KOSZA = wprost `trashed`.
   const isTrashOpen = inside && folders[openFolder!]?.id === TRASH_ID;
   const photosView = useMemo(
-    () => (isTrashOpen ? trashValues : photos.filter((s) => !trashedKeys.has(photoKey(s)))),
-    [isTrashOpen, trashValues, photos, trashedKeys]
+    () => (isTrashOpen ? trashValues : photos.filter((s) => !trashedKeys.has(photoKey(s)) && passesMedia(s))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isTrashOpen, trashValues, photos, trashedKeys, mediaFilter]
   );
-  const feedView = useMemo(() => feedPhotos.filter((s) => !trashedKeys.has(photoKey(s))), [feedPhotos, trashedKeys]);
+  // KOSZ filtra NIE stosuje — tam ma być widać wszystko, co czeka na skasowanie, niezależnie od typu.
+  const feedView = useMemo(
+    () => feedPhotos.filter((s) => !trashedKeys.has(photoKey(s)) && passesMedia(s)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [feedPhotos, trashedKeys, mediaFilter]
+  );
   // MOMENTS bierze te same media co feed, ale ograniczone do folderów aparatu (lub ręcznie wybranych).
   const momentsFolders = useMemo(() => momentsFolderIds(allFolders as any[], moments), [allFolders, moments]);
   const momentsView = useMemo(() => {
@@ -878,7 +890,9 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     onNext: () => move(1),
     onOpenSettings,
     onMenu: () => toggleMenu(), // klawisz MENU w podglądzie → kontekstowe menu galerii
-    onRequestImmersive: () => setImmersiveOpen(true), // press joysticka / pinch-out → IMMERSIVE
+    // press joysticka / pinch-out → IMMERSIVE. Dla WIDEO nie wchodzimy: nakładka pełnoekranowa rysuje
+    // klatkę przez expo-image i nie ma czym sterować odtwarzaniem — film ogląda się w zwykłym podglądzie.
+    onRequestImmersive: (currentSource as any)?.video ? undefined : () => setImmersiveOpen(true),
     leftHanded,
     promptBooster,
   });
@@ -931,6 +945,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     const item = menuItems[i];
     // SORT i SHOW HIDDEN działają „w miejscu" — menu ZOSTAJE otwarte (można cyklować / od razu zobaczyć efekt).
     if (item === 'SORT') { const m = (sortMode + 1) % SORTS.length; setSortMode(m); showMenuToast(`SORT: ${SORTS[m]}`); return; }
+    if (item === 'FILTER MEDIA') { const m = (mediaFilter + 1) % MEDIA_FILTERS.length; setMediaFilter(m); showMenuToast(`FILTER: ${MEDIA_FILTERS[m]}`); return; }
     if (item === 'SHOW HIDDEN ELEMENTS') { const next = !showHidden; setShowHidden(next); showMenuToast(next ? 'SHOWING HIDDEN' : 'HIDING HIDDEN'); return; }
     setMenuOpen(false);
     if (item === 'SELECT') { enterSelect(viewerOpen ? undefined : selected); return; } // wejście w tryb zaznaczania (zaznacz bieżący)
@@ -958,7 +973,6 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
       return;
     }
     if (item === 'SETTINGS') { onOpenSettings?.(); return; }
-    // FILTER MEDIA — dorobimy (backlog)
   };
   // etykiety menu (dynamiczne: SHOW ⇄ HIDE HIDDEN wg stanu)
   const menuLabels = menuItems.map((l) => (l === 'SHOW HIDDEN ELEMENTS' ? (showHidden ? 'HIDE HIDDEN ELEMENTS' : 'SHOW HIDDEN ELEMENTS') : l));

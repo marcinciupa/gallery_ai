@@ -16,6 +16,8 @@ import type { KeyboardConfig } from '../components/chrome/Keyboard';
 import { MenuBar } from '../components/chrome/MenuBar';
 import { ScreenTopBar, AiStatusView } from './ScreenChrome';
 import { CropStage, CropHandle } from './CropStage';
+import { VideoStage, type VideoStageHandle } from './VideoStage';
+import { formatDuration } from '../lib/duration';
 import { MagicEraseStage, MagicEraseHandle, MagicEraseState } from './MagicEraseStage';
 import { AiStage, AiStageHandle } from './AiStage';
 import { editImage, fillImage, boostPrompt, upscaleImage } from '../lib/deapi';
@@ -95,9 +97,10 @@ export type ImageInfo = {
   aiUpscale: number | null;
   prov: Provenance | null;
   place?: string | null;
+  duration?: number | null; // wideo: długość w ms (MediaStore) — patrz lib/duration
 };
 
-export function InfoPanel({ dims, fileSize, format, aiTools, aiPrompt, aiUpscale, prov, place }: { dims: { w: number; h: number } | null; fileSize: string | null; format?: string | null; aiTools: string[]; aiPrompt: string | null; aiUpscale: number | null; prov: Provenance | null; place?: string | null }) {
+export function InfoPanel({ dims, fileSize, format, aiTools, aiPrompt, aiUpscale, prov, place, duration }: { dims: { w: number; h: number } | null; fileSize: string | null; format?: string | null; aiTools: string[]; aiPrompt: string | null; aiUpscale: number | null; prov: Provenance | null; place?: string | null; duration?: number | null }) {
   const mp = dims ? Math.ceil((dims.w * dims.h) / 1e5) / 10 : null; // megapiksele; zaokrąglenie W GÓRĘ do 0.1 (stabilne, bez migania)
   // SOURCE/C2PA = odczyt ze standardów (IPTC digitalSourceType + obecność Content Credentials) z oryginału.
   // FORMAT = rzeczywisty format z rozszerzenia (RAW → np. „.dng (RAW)"). AI EDITED = ingerencja AI (metadane lub edycja).
@@ -109,6 +112,9 @@ export function InfoPanel({ dims, fileSize, format, aiTools, aiPrompt, aiUpscale
     [['SOURCE', sourceLabel(prov?.sourceType ?? null)], ['AI EDITED', edited ? 'YES' : 'NO']],
     [['AI UPSCALE', aiUpscale ? `YES (${aiUpscale}X)` : 'NO']],
   ];
+  // WIDEO: długość zamiast pola AI UPSCALE (filmów nie skalujemy AI) — wstawiana zaraz pod formatem.
+  const len = formatDuration(duration);
+  if (len) rows.splice(3, 0, [['LENGTH', len]]);
   return (
     <View style={{ alignSelf: 'stretch', gap: 8 }}>
       {rows.map((r, i) => (
@@ -387,6 +393,8 @@ export function useImageEditor({
   const [workingUri, setWorkingUri] = useState<string | null>(null);
   const cropRef = useRef<CropHandle>(null);
   const magicRef = useRef<MagicEraseHandle>(null);
+  const videoRef = useRef<VideoStageHandle>(null);
+  const [videoPlaying, setVideoPlaying] = useState(false); // etykieta klawisza PLAY/PAUSE
   const aiMaskRef = useRef<AiStageHandle>(null); // maska/pędzel w TEXT TO IMAGE (nawigacja joystickiem)
   // stan MAGIC ERASE raportowany przez stage — steruje etykietami klawiszy (APPLY/UNDO/RESET vs SAVE)
   const [magic, setMagic] = useState<MagicEraseState>({ applied: false, hasSelection: false, removeBg: false, processing: false });
@@ -403,6 +411,9 @@ export function useImageEditor({
   const [prov, setProv] = useState<Provenance | null>(null); // prowieniencja ORYGINAŁU (IPTC/C2PA)
   const addAiTool = (t: string) => setAiTools((a) => (a.includes(t) ? a : [...a, t]));
   const displaySource: ImageSourcePropType | undefined = workingUri ? { uri: workingUri } : source;
+  // WIDEO: podgląd zamiast obrazu, bez edycji. `workingUri` (wynik edycji) jest zawsze obrazem, więc
+  // po nim flaga gaśnie — inaczej po zapisie kadru pokazywalibyśmy odtwarzacz dla pliku JPEG.
+  const isVideo = !workingUri && !!(source as any)?.video;
 
   // AI EDIT — pisanie promptu (natywna klawiatura) + przetwarzanie.
   const [typing, setTyping] = useState(false);
@@ -753,6 +764,23 @@ export function useImageEditor({
         metal: metalBlank,
         joystick: { highlighted: true, onPress: fillAI },
       };
+    } else if (isVideo) {
+      // WIDEO: zamiast EDIT stoi PLAY/PAUSE, a press joysticka też przełącza odtwarzanie. Menu EDIT jest
+      // niedostępne (kadr i AI działają na zdjęciach), IMMERSIVE również — pełny ekran dla filmu to
+      // osobna funkcja, nie ten sam pager co dla obrazów.
+      keyboard = {
+        screen: [
+          { label: videoPlaying ? 'PAUSE' : 'PLAY', variant: 'primary', onPress: () => videoRef.current?.toggle() },
+          { label: 'BACK', onPress: onExit },
+        ],
+        metal: [infoSlot, { type: 'label', upper: 'MENU', active: !!onMenu, onPress: onMenu }],
+        joystick: {
+          highlighted: true,
+          onLeft: onPrev,
+          onRight: onNext,
+          onPress: () => videoRef.current?.toggle(),
+        },
+      };
     } else {
       // VIEWER (menu zamknięte, Figma 402:5598): EDIT · INFO/SAVE · joy(prev/next, press=EDIT menu) · MENU · BACK.
       // EDIT otwiera dolne menu EDYCJI; MENU otwiera kontekstowe menu GALERII (domyślna funkcja); BACK wychodzi.
@@ -781,7 +809,9 @@ export function useImageEditor({
         <View style={{ flex: 1, alignSelf: 'stretch', gap: 16, opacity: dimmed ? 0.25 : 1 }}>
         {/* content_area: obraz/pod-widok (zajmuje resztę wysokości), a pod nim — dolne menu EDIT */}
         <View style={{ flex: 1, alignSelf: 'stretch' }}>
-          {view === 'viewer' ? (
+          {view === 'viewer' && isVideo ? (
+            <VideoStage ref={videoRef} source={source!} onPrev={onPrev} onNext={onNext} onPlayingChange={setVideoPlaying} />
+          ) : view === 'viewer' ? (
             // KLUCZ tylko po wyniku edycji (workingUri) — NIE po zdjęciu. Klucz ze zdjęcia remountował cały
             // ZoomImage przy każdym PREV/NEXT, więc obraz ładował się od zera (pauza = „chrupnięcie" swipe'a).
             // Zerowanie zoomu przy zmianie zdjęcia robi teraz efekt wewnątrz ZoomImage.
@@ -828,7 +858,7 @@ export function useImageEditor({
             <Text numberOfLines={1} style={{ fontFamily: font.monoLabel.family, fontSize: font.monoLabel.size, color: screen.olive.primary, textAlign: 'center', ...phosphorGlow }}>
               {truncName((source as any)?.filename)}
             </Text>
-            <InfoPanel dims={dims} fileSize={fileSize} format={formatLabel((source as any)?.filename, !!(source as any)?.raw)} aiTools={aiTools} aiPrompt={aiPrompt} aiUpscale={aiUpscale} prov={prov} place={place} />
+            <InfoPanel dims={dims} fileSize={fileSize} format={formatLabel((source as any)?.filename, !!(source as any)?.raw)} aiTools={aiTools} aiPrompt={aiPrompt} aiUpscale={aiUpscale} prov={prov} place={place} duration={(source as any)?.duration ?? null} />
           </View>
         ) : null}
 
@@ -877,6 +907,6 @@ export function useImageEditor({
     </>
   );
 
-  const info: ImageInfo = { open: infoOpen, setOpen: setInfoOpen, dims, fileSize, format: formatLabel((source as any)?.filename, !!(source as any)?.raw), filename: (source as any)?.filename ?? null, aiTools, aiPrompt, aiUpscale, prov, place };
+  const info: ImageInfo = { open: infoOpen, setOpen: setInfoOpen, dims, fileSize, format: formatLabel((source as any)?.filename, !!(source as any)?.raw), filename: (source as any)?.filename ?? null, aiTools, aiPrompt, aiUpscale, prov, place, duration: (source as any)?.duration ?? null };
   return { content, keyboard, goBack, typing, info };
 }
