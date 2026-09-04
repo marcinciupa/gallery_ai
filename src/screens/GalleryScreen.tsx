@@ -9,7 +9,7 @@
  * Źródło zdjęć: MOCK (assets/mock) — realne z expo-media-library później.
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, Pressable, Platform, AppState, FlatList, PanResponder, LayoutChangeEvent, ImageSourcePropType, TextInput } from 'react-native';
+import { View, Text, Pressable, Platform, FlatList, PanResponder, LayoutChangeEvent, ImageSourcePropType, TextInput } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { color, font, screen, textShadow, dims } from '../theme/tokens';
 import type { KeyboardConfig } from '../components/chrome/Keyboard';
@@ -24,7 +24,6 @@ import { useImageEditor } from './EditorScreen';
 import { MOCK_FOLDERS, type Folder } from './mockFolders';
 import { Diag, DIAG_ALL } from '../lib/diag';
 import { moveToAlbum, copyToAlbum, createAlbumWith, isValidAlbumName, MediaOpResult } from '../lib/mediaOps';
-import { hasAllFilesAccess, openAllFilesAccessSettings } from '../lib/allFilesAccess';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const PREFS_KEY = 'gallery_ai:view_prefs'; // zapamiętane preferencje widoku galerii
@@ -387,11 +386,6 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // wzorzec z promptu AI). Po zamknięciu klawiatury klawisze CREATE/CANCEL wracają.
   const [nameFocus, setNameFocus] = useState(false);
   const nameInputRef = useRef<TextInput>(null);
-  // Pytanie o „dostęp do wszystkich plików" — pokazywane RAZ, dokładnie w chwili, gdy jest potrzebne
-  // (pierwsze przenoszenie), zamiast wiersza w ustawieniach. Trzyma zawieszoną operację, żeby po powrocie
-  // z ekranu systemowego dokończyć ją bez proszenia użytkownika o powtórzenie całej ścieżki.
-  const [accessAsk, setAccessAsk] = useState<null | { run: () => void }>(null);
-  const accessAsked = useRef(false); // czy już kiedykolwiek pytaliśmy (persist niżej) — nie nagabujemy drugi raz
 
   // KURSOR chowany podczas swipe-follow i przytrzymania joysticka (wraca po zatrzymaniu). Nie zmienia `selected`,
   // tylko renderowaną ramkę (auto-scroll dalej działa na realnym `selected`).
@@ -488,22 +482,6 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   const [showHidden, setShowHidden] = useState(false);
   const trashValues = useMemo(() => Object.values(trashed).map((t) => t.src), [trashed]);
 
-  // Kosz sam się opróżnia: wpisy starsze niż 30 dni kasujemy TRWAŁE przy starcie apki (raz, po wczytaniu).
-  // Robimy to po cichu — użytkownik zdecydował, wyrzucając plik; przypominanie o tym nic by nie wniosło.
-  const purgedOnce = useRef(false);
-  useEffect(() => {
-    if (purgedOnce.current || !trashLoaded.current) return;
-    const stale = Object.entries(trashed).filter(([, v]) => Date.now() - v.at > TRASH_TTL_MS).map(([k]) => k);
-    if (!Object.keys(trashed).length) return;
-    purgedOnce.current = true;
-    if (!stale.length) return;
-    (async () => {
-      try { await media?.deleteItems(stale, []); } catch { /* brak zgody → zostaną do następnego razu */ }
-      setTrashed((t) => { const nx = { ...t }; stale.forEach((k) => delete nx[k]); return nx; });
-      media?.reload();
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trashed]);
   // OKŁADKI I LICZNIKI vs KOSZ. Kosz jest funkcją APKI (filtrujemy listy zdjęć), a okładka i licznik folderu
   // pochodzą wprost z MediaStore, który o nim nic nie wie — wyrzucone zdjęcie zostawało więc na kaflu folderu,
   // z którego je wyrzucono, i wliczało się do licznika. Dla folderów, których okładka wylądowała w koszu,
@@ -856,7 +834,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // poziomie EKRANU, bo panel centruje się w pionie względem całego ekranu urządzenia.
   // Treść i menu pod dialogiem WYGASZONE do 25% — wartość Z PROJEKTU, jedna dla całej apki (tyle samo co pod
   // otwartym menu). UWAGA: kod rec_ai ma w tym miejscu 0.35 i odbiega od makiety — nie brać go tu za wzorzec.
-  const dialogOpen = delPhase !== 'none' || !!accessAsk;
+  const dialogOpen = delPhase !== 'none';
   const overlays = (
     <>
       {/* kolor panelu wg FAZY (nie wg trwałości): pytanie = czerwone, wynik = fosforowy */}
@@ -871,7 +849,6 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
           sub={delPhase === 'choose' && holding ? 'THIS CANNOT BE UNDONE' : delMsg.sub}
         />
       ) : null}
-      {accessAsk ? <OverlayPanel tone="phosphor" title="ALLOW FILE ACCESS?" sub="WITHOUT IT ANDROID ASKS FOR CONFIRMATION ON EVERY MOVE AND DELETE" /> : null}
     </>
   );
 
@@ -1035,12 +1012,40 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     return added;
   };
   const restoreFromTrash = (keys: string[]) => setTrashed((t) => { const nx = { ...t }; keys.forEach((k) => delete nx[k]); return nx; });
-  const deleteForever = async (keys: string[]) => {
+  /**
+   * TRWAŁE kasowanie. Od 0.969 (bez „dostępu do wszystkich plików") Android pyta o zgodę systemowym oknem,
+   * więc ODMOWA JEST NORMALNYM WYNIKIEM i nie wolno wtedy czyścić wpisu w koszu. Poprzednia wersja robiła
+   * `setTrashed` bezwarunkowo — użytkownik klikał „Nie zezwalaj", a zdjęcie i tak znikało z kosza i wracało
+   * do galerii: kosz kłamał, że plik został skasowany. Zwracamy klucze, które FAKTYCZNIE zniknęły.
+   */
+  const deleteForever = async (keys: string[]): Promise<string[]> => {
     // ROOT (foldery) → keys to album-id (Album.delete); feed/wnętrze/kosz → keys to content:// URI (Asset.delete)
-    try { await (isFolderView ? media?.deleteItems([], keys) : media?.deleteItems(keys, [])); } catch { /* systemowy dialog odrzucony */ }
-    setTrashed((t) => { const nx = { ...t }; keys.forEach((k) => delete nx[k]); return nx; });
+    const gone = (await (isFolderView ? media?.deleteItems([], keys) : media?.deleteItems(keys, []))) ?? [];
+    if (!gone.length) return gone;
+    setTrashed((t) => { const nx = { ...t }; gone.forEach((k) => delete nx[k]); return nx; });
     media?.reload(); // odśwież okładki/liczniki albumów po trwałym skasowaniu
+    return gone;
   };
+
+  // Kosz sam się opróżnia: wpisy starsze niż 30 dni kasujemy TRWALE — ale DOPIERO PRZY WEJŚCIU DO KOSZA,
+  // nie przy starcie apki. Bez „dostępu do wszystkich plików" kasowanie pokazuje systemowe okno zgody, a
+  // odpalane ze startu wyskakiwałoby użytkownikowi na powitanie, bez żadnego kontekstu. W koszu widzi, czego
+  // okno dotyczy. Odmowa = wpisy zostają do następnego wejścia (czyści je `deleteForever`, i tylko te realne).
+  const purgedOnce = useRef(false);
+  useEffect(() => {
+    if (!isTrashOpen || purgedOnce.current || !trashLoaded.current) return;
+    const stale = Object.entries(trashed).filter(([, v]) => Date.now() - v.at > TRASH_TTL_MS).map(([k]) => k);
+    if (!stale.length) return;
+    // Zapowiedź PRZED kasowaniem: zaraz może wyskoczyć systemowe okno zgody na pliki, których użytkownik
+    // w tej sesji nie tknął — bez tej informacji wyglądałoby jak okno znikąd.
+    showMenuToast(`EMPTYING ${stale.length} EXPIRED ITEM${stale.length > 1 ? 'S' : ''}`, 3000);
+    void deleteForever(stale).then((gone) => {
+      // Zatrzask DOPIERO po realnym skasowaniu. Gdyby leciał przed await, odmowa w oknie zgody blokowałaby
+      // ponowną próbę aż do restartu apki — a komentarz obok obiecuje, że wpisy czekają do następnego wejścia.
+      if (gone.length === stale.length) purgedOnce.current = true; // częściowy wynik → resztę spróbujemy znowu
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTrashOpen]);
 
   // USUWANIE — potwierdzenie (overlay) → wykonanie → wynik (auto-znika, 2,5 s → wyjście z trybu). Poza koszem =
   // przeniesienie do kosza (odwracalne, UNDO); w koszu = TRWAŁE (czerwony overlay). (wzorzec rec_ai delete flow)
@@ -1110,21 +1115,21 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     const keys = Array.from(selectedIds);
     const label = targetLabel(keys);
     setHolding(false);
-    // Trwałe kasowanie bez pełnego dostępu = systemowe okno na każdą paczkę. Pytamy WCZEŚNIEJ, żeby ścieżka
-    // nie wyglądała tak: okno systemu → komunikat o błędzie → dopiero prośba o uprawnienie.
-    if (permanent && !DESIGN && !accessAsked.current && !(await hasAllFilesAccess())) {
-      setDelPhase('none');
-      setAccessAsk({ run: () => { void confirmDelete(permanent); } });
-      return;
-    }
     // Po potwierdzeniu zostaje sam TOAST — panel wyniku niczego już nie wnosił: decyzja jest podjęta, a UNDO
     // przy trwałym kasowaniu i tak nie istnieje. Kosz ma własne cofnięcie (RESTORE), więc i tam panel zbędny.
     setDelPhase('none');
     setSelectedIds(new Set());
     setSelectMode(false);
     setViewerOpen(false);
-    await deleteForever(keys);
-    showMenuToast(`${label} DELETED`, 3000);
+    const gone = await deleteForever(keys);
+    // Paczka bywa mieszana (nasze pliki lecą bez pytania, cudze przez jedno okno), więc wynik CZĘŚCIOWY jest
+    // normalny — i musi być powiedziany wprost, bo reszta zdjęć zostaje widoczna w koszu.
+    showMenuToast(
+      gone.length === 0 ? 'DELETE CANCELLED'
+        : gone.length < keys.length ? `${gone.length} OF ${keys.length} DELETED`
+          : `${label} DELETED`,
+      3000
+    );
   };
   const cancelDelete = () => { setHolding(false); setDelPhase('none'); };
 
@@ -1168,46 +1173,10 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   );
   const nameOk = isValidAlbumName(newName) && !nameTaken;
 
-  // Pytanie o dostęp zadajemy raz na URUCHOMIENIE apki, nie raz na zawsze: gdyby flaga była trwała, jedno
-  // naciśnięcie SKIP odcinałoby możliwość przyznania uprawnienia na stałe (wpisu w ustawieniach nie ma).
-  const awaitingAccess = useRef(false); // wyszliśmy do ustawień systemu i czekamy na powrót
-  const finishAccessAsk = async (grant: boolean) => {
-    const pending = accessAsk;
-    accessAsked.current = true;
-    if (!pending) { setAccessAsk(null); return; }
-    if (grant) { awaitingAccess.current = true; await openAllFilesAccessSettings(); return; } // dokończymy po powrocie
-    setAccessAsk(null);
-    pending.run();
-  };
-  // Powrót z systemowego ekranu → dokańczamy zawieszoną akcję (z uprawnieniem albo bez, jak zdecydował user).
-  useEffect(() => {
-    if (!accessAsk) return;
-    const sub = AppState.addEventListener('change', (st) => {
-      if (st !== 'active' || !awaitingAccess.current) return;
-      awaitingAccess.current = false;
-      const pending = accessAsk;
-      setAccessAsk(null);
-      // Android nadaje pełny dostęp PROCESOWI — apka włączona przed przestawieniem przełącznika nadal pracuje
-      // na starych prawach. Jeśli sonda dalej mówi „nie", mówimy wprost, że trzeba ją zrestartować.
-      hasAllFilesAccess().then((ok) => { if (!ok) showMenuToast('RESTART APP TO APPLY ACCESS', 4000); }).catch(() => {});
-      pending.run();
-    });
-    return () => sub.remove();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessAsk]);
 
-  /**
-   * Brama uprawnienia. MOVE kasuje oryginał, a bez „dostępu do wszystkich plików" system pyta o zgodę przy
-   * KAŻDEJ takiej operacji. Pytamy więc raz, zanim cokolwiek zrobimy, i zapamiętujemy akcję do dokończenia.
-   */
   const runFileOp = async (targetId: string | null, name?: string) => {
     if (!pick) return;
     const { op, keys } = pick;
-    if (op === 'MOVE' && !DESIGN && !accessAsked.current && !(await hasAllFilesAccess())) {
-      setPick(null); setNaming(false); setNewName(''); setNameFocus(false);
-      setAccessAsk({ run: () => { void execFileOp(op, keys, targetId, name); } });
-      return;
-    }
     await execFileOp(op, keys, targetId, name);
   };
 
@@ -1277,7 +1246,6 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
 
   // back: kolejno zamknij MENU → (edytor: menu edycji/pod-widok, a na końcu podgląd) → folder → feed
   const goBack = () => {
-    if (accessAsk) { setAccessAsk(null); return true; }        // pytanie o dostęp = anulowanie operacji
     if (naming) { setNaming(false); setNewName(''); setNameFocus(false); return true; } // nazwa nowego folderu → wróć do siatki celów
     if (pick) { cancelPick(); return true; }                            // picker → wróć do zaznaczenia/siatki
     if (delPhase === 'confirm' || delPhase === 'choose') { cancelDelete(); return true; }
@@ -1494,16 +1462,6 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     joystick: { highlighted: false },
   };
 
-  // KLAWIATURA pytania o dostęp do plików: ALLOW wychodzi do systemowego przełącznika, SKIP robi operację
-  // po staremu (z systemowym oknem zgody przy każdym przenoszeniu).
-  const accessKeyboard: KeyboardConfig = {
-    screen: [
-      { label: 'ALLOW', variant: 'primary', onPress: () => finishAccessAsk(true) },
-      { label: 'SKIP', onPress: () => finishAccessAsk(false) },
-    ],
-    metal: [{ type: 'label', upper: '' }, { type: 'label', upper: '' }],
-    joystick: { highlighted: false },
-  };
 
   // KLAWIATURA PICKERA (wybór folderu docelowego): NEW FOLDER · [joy: nawigacja + wybór] · BACK.
   const pickKeyboard: KeyboardConfig = {
@@ -1869,9 +1827,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   );
 
   const finalContent = pick ? pickerContent : viewerOpen ? viewerContent : content;
-  const finalKeyboard = accessAsk
-    ? accessKeyboard
-    : naming
+  const finalKeyboard = naming
       ? nameKeyboard
       : pick
         ? pickKeyboard

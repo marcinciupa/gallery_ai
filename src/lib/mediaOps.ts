@@ -121,66 +121,98 @@ async function copyAiTags(srcIds: string[], created: any[]): Promise<void> {
 }
 
 /**
- * Skasowanie oryginałów (po skopiowaniu przy MOVE) oraz trwałe kasowanie z kosza.
+ * Trwałe kasowanie plików — używane przy MOVE (oryginały po skopiowaniu) i przy opróżnianiu kosza.
  *
- * ⚠️ DLACZEGO NIE `Asset.delete`: OBIE ścieżki kasowania w expo-media-library — nowa (`AssetModernDeleter`)
- * i stara (`MediaLibraryModule.deleteAssetsAsync`) — kończą się `createDeleteRequest`, czyli systemowym oknem
- * zgody. Stara filtruje wprawdzie URI przez `checkUriPermission`, ale ten sprawdza WYŁĄCZNIE uprawnienia
- * nadane per-URI i NIE uwzględnia `MANAGE_EXTERNAL_STORAGE`. Dlatego okno wyskakiwało nawet po przyznaniu
- * „dostępu do wszystkich plików".
+ * ⚠️ ZMIANA 0.969: apka NIE MA JUŻ „dostępu do wszystkich plików" (`MANAGE_EXTERNAL_STORAGE`). Google Play
+ * odrzuciło je dwukrotnie: galeria nie jest na liście dozwolonych zastosowań (menedżer plików, backup,
+ * antywirus), a dla samych zdjęć polityka wymaga MediaStore. Uprawnienie NIGDY nie odblokowywało tu żadnej
+ * funkcji — służyło wyłącznie do wyciszenia systemowego okna zgody, więc jego usunięcie nic nie psuje.
  *
- * Rozwiązanie: mając to uprawnienie, kasujemy PLIK wprost przez system plików. Na Androidzie 11+ dostęp
- * plikowy idzie przez FUSE, więc MediaProvider sam usuwa wtedy wpis z MediaStore. Dla pewności sprawdzamy
- * po każdym pliku, czy wpis faktycznie zniknął — jeśli nie (np. karta SD), dokańczamy takie sztuki starą
- * drogą z oknem zgody, żeby nie zostawić „duchów": miniatur wskazujących na nieistniejące pliki.
- * Bez uprawnienia zachowanie jest jak dotąd: jedno systemowe okno na paczkę.
+ * Zostają DWIE ścieżki, w tej kolejności:
+ *  1. `File.delete()` na ścieżce pliku — działa BEZ ŻADNEGO OKNA dla plików, których WŁAŚCICIELEM jest nasza
+ *     apka (kopie z COPY/MOVE, zdjęcia zapisane po edycji AI). Android 11+ dopuszcza zapis po ścieżce do
+ *     własnych plików bez uprawnień specjalnych — to jest zgodne z polityką i nie wymaga deklaracji.
+ *     Dla cudzych plików (zdjęcia z aparatu) rzuci — i o to chodzi, spadamy niżej.
+ *  2. `Asset.delete` → `MediaStore.createDeleteRequest` — JEDNO systemowe okno zgody na CAŁĄ paczkę,
+ *     niezależnie czy kasujesz 1 zdjęcie czy 300. To jest droga, którą Google wskazuje wprost.
  *
- * ⚠️ DLACZEGO NOWE API (`File.delete()`), a nie legacy `deleteAsync` (znalezione na emulatorze API 34,
- * v0.9665): legacy sprawdza prawo zapisu na ścieżce z DOSŁOWNIE doklejonym `/..` do nazwy pliku
- * (`Uri.withAppendedPath(uri, "..")`), a jądro na `plik.jpg/..` zwraca ENOTDIR → `canWrite()` = false →
- * „isn't deletable" ZANIM cokolwiek spróbuje skasować. Ścieżki WEWNĘTRZNE (cache) ratuje inna gałąź
- * (porównanie po `canonicalPath`, które `..` normalizuje), dlatego bug gryzie wyłącznie pliki na storage
- * współdzielonym — czyli dokładnie te, dla których mamy „dostęp do wszystkich plików". Efekt był taki,
- * że okno zgody wyskakiwało MIMO przyznanego uprawnienia. Nowe API waliduje ścieżkę samego pliku.
+ * ⚠️ NIE UŻYWAĆ legacy `deleteAsync` z `expo-file-system/legacy` (znalezione na emulatorze API 34, v0.9665):
+ * sprawdza prawo zapisu na ścieżce z DOSŁOWNIE doklejonym `/..` (`Uri.withAppendedPath(uri, "..")`), a jądro
+ * na `plik.jpg/..` zwraca ENOTDIR → `canWrite()` = false → „isn't deletable" ZANIM cokolwiek spróbuje skasować.
+ * Nowe API (`File.delete()`) waliduje ścieżkę samego pliku.
+ *
+ * ⚠️ ŻADNEGO CICHEGO POMIJANIA. Wcześniejsza wersja przy nieczytelnej ścieżce pomijała plik w OBU ścieżkach:
+ * bez kasowania, bez okna, bez błędu — a wołający raportował sukces. Przy MOVE znaczyło to „przeniesiono",
+ * podczas gdy oryginał zostawał na miejscu. Teraz każdy plik kończy albo w `deleted`, albo w `leftovers`.
  */
-export async function deleteAssets(assetIds: string[]): Promise<void> {
-  if (!nativeOnly() || !assetIds.length) return;
-  await deleteOriginals(await loadML(), assetIds);
-}
-
-async function deleteOriginals(ML: any, assetIds: string[]): Promise<void> {
-  // NAJPIERW kasowanie pliku wprost — bez pytania o nic. Nie sprawdzamy wcześniej uprawnienia (próba odczytu
-  // katalogu sama bywała zawodna i wysyłała nas na ścieżkę systemową mimo przyznanego dostępu): jeśli
-  // uprawnienia nie ma, po prostu rzuci i spadniemy niżej. Operacja jest tu jedynym wiarygodnym testem.
+async function deleteCore(ML: any, assetIds: string[]): Promise<{ deleted: string[]; denied: boolean }> {
+  const deleted: string[] = [];
   const leftovers: string[] = [];
   for (const id of assetIds) {
-    let file: FsFile | null = null;
     try {
       const path = await new ML.Asset(id).getUri();
-      if (!path) throw new Error('NO PATH');
-      file = new FsFile(path);
-      if (file.exists) file.delete();
+      if (!path) { leftovers.push(id); continue; }
+      const file = new FsFile(path);
+      // ⚠️ `exists === false` NIE ZNACZY „pliku nie ma". `FileSystemFile.exists` zwraca false także wtedy, gdy
+      // apka nie ma prawa ODCZYTU ścieżki (`File.canRead()`), a bez „dostępu do wszystkich plików" dotyczy to
+      // m.in. karty SD. Gdyby brać to za sukces, kasowanie z kosza raportowałoby „skasowane" bez skasowania
+      // czegokolwiek i bez okna zgody — wpis znikałby z kosza, a zdjęcie wracało do galerii. Więc: nie widzę
+      // pliku → oddaję sprawę drodze systemowej, ona rozstrzygnie. Osierocony wiersz MediaStore skasuje się
+      // wtedy bez szkody, a plik na SD dostanie okno zgody, którego naprawdę potrzebuje.
+      if (!file.exists) { leftovers.push(id); continue; }
+      file.delete();
+      if (file.exists) { leftovers.push(id); continue; } // delete nie rzucił, ale plik został → droga systemowa
+      deleted.push(id);
     } catch {
-      // brak prawa zapisu do pliku (czyli brak „dostępu do wszystkich plików") → niech pójdzie drogą systemową
-      leftovers.push(id);
-      continue;
+      leftovers.push(id); // brak prawa zapisu (cudzy plik) albo nieczytelna ścieżka → droga systemowa
     }
-    // Sprawdzamy TYLKO to, co jest rozstrzygające: czy pliku faktycznie nie ma. Wcześniej pytałem jeszcze
-    // MediaStore o nazwę i brak błędu brałem za „wpis został" — a ten indeks nadąża za FUSE z opóźnieniem,
-    // więc dla realnie skasowanego pliku i tak wchodziliśmy w systemowe kasowanie, czyli w to okno, które
-    // właśnie omijamy. Ewentualny osierocony rekord MediaProvider sprząta sam.
-    try {
-      if (file.exists) leftovers.push(id);
-    } catch { /* nie da się sprawdzić — ufamy, że delete nie rzucił */ }
   }
-  if (!leftovers.length) return;
-  await ML.Asset.delete(leftovers.map((id: string) => new ML.Asset(id))); // rzuci, gdy user odmówi
+  if (!leftovers.length) return { deleted, denied: false };
+  try {
+    await ML.Asset.delete(leftovers.map((id: string) => new ML.Asset(id))); // JEDNO okno na całą resztę
+    deleted.push(...leftovers);
+    return { deleted, denied: false };
+  } catch {
+    return { deleted, denied: true }; // user odmówił — `deleted` mówi, co mimo to zniknęło
+  }
 }
 
 /**
- * MOVE do ISTNIEJĄCEGO albumu: kopia do celu + skasowanie oryginałów (jeden systemowy dialog na paczkę).
+ * Sprzątanie WŁASNYCH kopii po nieudanym MOVE. Świadomie po ścieżce, a NIE przez `Asset.delete`: ten idzie
+ * przez `MediaStore.createDeleteRequest` (AssetModernDeleter → DeleteContract), czyli pokazałby DRUGIE okno
+ * zgody zaraz po tym, jak użytkownik odmówił w pierwszym. Kopie zrobiliśmy my, więc plikowe kasowanie
+ * własnego pliku przechodzi bez pytania. Gdy się nie uda — zostaje duplikat, i to jest lepszy wynik niż
+ * kolejny systemowy dialog.
+ */
+async function deleteOwnCopies(assets: any[]): Promise<void> {
+  for (const a of assets) {
+    try {
+      const path = await a?.getUri?.();
+      if (!path) continue;
+      const f = new FsFile(path);
+      if (f.exists) f.delete();
+    } catch { /* zostaje duplikat — świadomie */ }
+  }
+}
+
+/**
+ * Kasowanie na zlecenie apki (kosz). Zwraca ID, które FAKTYCZNIE zniknęły — wołający ma po czym poznać, czego
+ * NIE usuwać ze swojego stanu, gdy użytkownik odmówił w systemowym oknie. Nie rzuca.
+ */
+export async function deleteAssets(assetIds: string[]): Promise<string[]> {
+  if (!nativeOnly() || !assetIds.length) return [];
+  return (await deleteCore(await loadML(), assetIds)).deleted;
+}
+
+/**
+ * MOVE do ISTNIEJĄCEGO albumu: kopia do celu + skasowanie oryginałów (jedno systemowe okno na paczkę).
  * Kasujemy WYŁĄCZNIE te oryginały, których kopia faktycznie powstała — inaczej nieudana kopia oznaczałaby
- * utratę pliku. Odmowa dialogu = kasujemy własne kopie i raportujemy zero (bez duplikatów w bibliotece).
+ * utratę pliku.
+ *
+ * ⚠️ ODMOWA W OKNIE ZGODY JEST CZĘŚCIOWA. Paczka bywa mieszana: pliki NASZE (kopie, zdjęcia po edycji AI)
+ * kasują się od razu i bez pytania, cudze idą przez okno. Gdy user odmówi, część oryginałów już nie istnieje —
+ * kasowanie ich kopii oznaczałoby BEZPOWROTNĄ UTRATĘ ZDJĘCIA. Dlatego sprzątamy tylko te kopie, których
+ * oryginał PRZEŻYŁ (żeby nie zostawić duplikatu), a resztę zostawiamy i uczciwie raportujemy jako przeniesione.
  */
 export async function moveToAlbum(
   assetIds: string[],
@@ -190,16 +222,18 @@ export async function moveToAlbum(
   if (!nativeOnly() || !assetIds.length) return { ok: 0, fail: assetIds.length };
   const ML = await loadML();
   const album = new ML.Album(albumId);
-  const { created, copiedIds, fail } = await copyIntoAlbum(ML, assetIds, album, onProgress);
+  const { created, copiedIds } = await copyIntoAlbum(ML, assetIds, album, onProgress);
   if (!copiedIds.length) return { ok: 0, fail: assetIds.length, albumId };
-  try {
-    await deleteOriginals(ML, copiedIds);
-  } catch {
-    try { await ML.Asset.delete(created); } catch { /* nie udało się posprzątać — trudno, plik zostaje */ }
-    return { ok: 0, fail: assetIds.length, albumId };
-  }
-  await moveAiTags(copiedIds, created);
-  return { ok: copiedIds.length, fail, albumId };
+  const { deleted } = await deleteCore(ML, copiedIds);
+  const moved = new Set(deleted);
+  const orphanCopies = created.filter((_: any, i: number) => !moved.has(copiedIds[i]));
+  // kopie bez skasowanego oryginału = duplikaty; są NASZE, więc kasujemy je po ścieżce — bez kolejnego okna
+  if (orphanCopies.length) await deleteOwnCopies(orphanCopies);
+  await moveAiTags(
+    copiedIds.filter((id: string) => moved.has(id)),
+    created.filter((_: any, i: number) => moved.has(copiedIds[i]))
+  );
+  return { ok: deleted.length, fail: assetIds.length - deleted.length, albumId };
 }
 
 /** COPY do ISTNIEJĄCEGO albumu — plik po pliku, z raportem postępu (bez dialogu systemowego). */
@@ -230,6 +264,24 @@ export async function createAlbumWith(
 ): Promise<MediaOpResult> {
   if (!nativeOnly() || !assetIds.length) return { ok: 0, fail: assetIds.length };
   const ML = await loadML();
+  // ⚠️ KOLIZJA NAZWY = RYZYKO SKASOWANIA CUDZEGO ALBUMU. Natywne `Album.create` NIE tworzy nowego albumu, gdy
+  // katalog `Pictures/<name>/` już istnieje: `AlbumModernFactory.createFromFilePaths` robi po wstawieniu
+  // `queryAlbumId(relativePath)` i oddaje id ISTNIEJĄCEGO kubełka. Walidacja w UI (`nameTaken`) liczy po
+  // WIDOCZNEJ liście folderów, więc nie zna folderów ukrytych, odfiltrowanych w Settings ani takich, których
+  // wszystkie zdjęcia siedzą w koszu — i taką nazwę przepuści. Wcześniejszy rollback wołał wtedy
+  // `Album.delete`, które natywnie kasuje WSZYSTKIE assety kubełka: odmowa w oknie zgody mogła wyczyścić
+  // cudzy, wielosetzdjęciowy folder. Dlatego kolizję wykrywamy PRZED utworzeniem i po prostu przenosimy do
+  // istniejącego albumu (to samo, co MOVE do folderu z listy), a rollback NIGDY nie kasuje albumu.
+  // Uwaga na zakres: `Album.get` dopasowuje po `BUCKET_DISPLAY_NAME` w CAŁEJ pamięci, a `Album.create`
+  // założyłoby `Pictures/<name>/`. Więc gdy folder o tej nazwie leży gdzie indziej (np. `DCIM/Trip`),
+  // trafimy do NIEGO zamiast zakładać nowy w `Pictures`. Świadomy kompromis: zdjęcia lądują w folderze
+  // o nazwie, którą użytkownik wpisał, i nic nie ginie — a alternatywą było ryzyko skasowania cudzego albumu.
+  const existing = await ML.Album.get(name).catch(() => null);
+  if (existing?.id) {
+    return op === 'MOVE'
+      ? moveToAlbum(assetIds, existing.id, onProgress)
+      : copyToAlbum(assetIds, existing.id, onProgress);
+  }
   try {
     // Album materializujemy PIERWSZYM plikiem (album bez zawartości nie istnieje w MediaStore), a resztę
     // dokładamy tą samą, sprawdzoną ścieżką co przy istniejącym albumie. Dzięki temu mamy dokładne pary
@@ -256,18 +308,24 @@ export async function createAlbumWith(
 
     const doneCopies = [firstCopy, ...created];
     if (op === 'MOVE') {
-      try {
-        await deleteOriginals(ML, done);
-      } catch {
-        // odmowa kasowania → sprzątamy kopie i cały świeżo utworzony album, żeby nie zostawić duplikatów
-        try { await ML.Asset.delete(created); } catch { /* best-effort */ }
-        try { await ML.Album.delete([album]); } catch { /* best-effort */ }
-        return { ok: 0, fail: assetIds.length };
-      }
-      await moveAiTags(done, doneCopies);
-    } else {
-      await copyAiTags(done, doneCopies);
+      // Ta sama zasada co w `moveToAlbum`: przy częściowej odmowie NIE kasujemy kopii, których oryginał już
+      // zniknął — to byłaby utrata zdjęcia. Sprzątamy tylko duplikaty (oryginał przeżył). Świeży album
+      // usuwamy jedynie wtedy, gdy nie przeniosło się NIC.
+      const { deleted } = await deleteCore(ML, done);
+      const moved = new Set(deleted);
+      const orphanCopies = doneCopies.filter((c: any, i: number) => c && !moved.has(done[i]));
+      // Kopie kasujemy po ścieżce (nasze pliki, bez okna). Świeżo utworzonego albumu NIE kasujemy przez
+      // `Album.delete` — natywnie kasuje ono całą zawartość kubełka, co przy kolizji nazw jest bombą.
+      // Album bez zawartości i tak nie istnieje dla MediaStore, więc nie ma czego sprzątać.
+      if (orphanCopies.length) await deleteOwnCopies(orphanCopies);
+      if (!deleted.length) return { ok: 0, fail: assetIds.length };
+      await moveAiTags(
+        done.filter((id: string) => moved.has(id)),
+        doneCopies.filter((_: any, i: number) => moved.has(done[i]))
+      );
+      return { ok: deleted.length, fail: assetIds.length - deleted.length, albumId: album?.id };
     }
+    await copyAiTags(done, doneCopies);
     return { ok: done.length, fail, albumId: album?.id };
   } catch {
     return { ok: 0, fail: assetIds.length };

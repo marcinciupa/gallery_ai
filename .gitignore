@@ -42,3 +42,6 @@ scratchpad/
 # store graphics — intermediate AI generations (reproducible; finals are kept)
 store_assets/raw/
 tools/.apk-counter
+
+# narzędzia MCP (zrzuty stron) — nie należą do repo
+.playwright-mcp/

@@ -90,6 +90,32 @@ Realny skeuomorfizm (tekstura, haptyka, tilt) tylko natywnie (Expo Go / dev buil
   (`eas env:create --environment production --name EXPO_PUBLIC_API_URL --value <URL> --visibility plaintext`, tak samo
   `EXPO_PUBLIC_APP_KEY`). Ustawione 2026-07-13. NIE wpisywać ich do `eas.json` (repo jest publiczne). Lokalny `.env`
   zostaje do dev (Expo Go / web).
+- **⛔ NIGDY nie dodawać `MANAGE_EXTERNAL_STORAGE` („dostęp do wszystkich plików") — usunięte w 0.969.**
+  Google Play odrzuciło je DWA RAZY (2026-09-02) z dwóch tytułów naraz: (1) galeria nie jest na liście
+  dozwolonych zastosowań (menedżer plików, backup, antywirus, zarządzanie dokumentami, wyszukiwanie plików,
+  szyfrowanie dysku, migracja urządzeń), (2) apce operującej na samych zdjęciach polityka NAKAZUJE MediaStore.
+  Uprawnienie nigdy nie odblokowywało tu żadnej funkcji — służyło WYŁĄCZNIE do wyciszenia systemowego okna
+  zgody, więc jego usunięcie niczego nie zepsuło. Nie próbować bronić go deklaracją: poprzednia próba
+  (przemianowanie apki na „menedżer plików" w opisie sklepowym) była ślepą uliczką i została skasowana razem
+  z `store_assets/all_files_access_declaration.md`. Usunięto też `src/lib/allFilesAccess.ts`, nakładkę
+  „ALLOW FILE ACCESS?" i zależność `expo-intent-launcher`.
+  - **Jak kasowanie działa teraz** (`mediaOps.ts` → `deleteCore`): najpierw `File.delete()` po ścieżce — to
+    przechodzi BEZ OKNA dla plików, których właścicielem jest nasza apka (kopie z COPY/MOVE, zapisy po edycji
+    AI; Android 11+ pozwala pisać po ścieżce do własnych plików bez uprawnień specjalnych). Reszta (zdjęcia
+    z aparatu i innych apek) idzie przez `Asset.delete` → `MediaStore.createDeleteRequest` = JEDNO okno na
+    CAŁĄ paczkę, niezależnie czy kasujesz 1 zdjęcie czy 300.
+  - **Odmowa w oknie jest normalnym wynikiem** i musi być obsłużona: `deleteAssets`/`deleteItems`/`deleteForever`
+    zwracają klucze, które FAKTYCZNIE zniknęły. Nie wolno czyścić stanu apki (kosza) bezwarunkowo — wcześniej
+    odmowa kasowała wpis z kosza, więc zdjęcie wracało do galerii jako „nieskasowane, ale i nie w koszu".
+    Przy MOVE odmowa jest CZĘŚCIOWA (nasze pliki już zniknęły) — rollback kasuje tylko kopie, których oryginał
+    PRZEŻYŁ, inaczej traci się zdjęcie.
+  - Auto-czyszczenie kosza po 30 dniach odpala się **przy wejściu do kosza**, nie przy starcie apki — inaczej
+    okno zgody wyskakiwałoby użytkownikowi na powitanie, bez kontekstu.
+  - Jeśli kiedyś wrócimy do „zero okien": `MANAGE_MEDIA` (Android 12+) wycisza te same okna i **nie jest** na
+    liście uprawnień ograniczonych Play (bez formularza i bez recenzji polityki). Osobna iteracja, NIE w tym
+    samym wydaniu co tłumaczenie się z poprzedniego uprawnienia.
+  - `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO` ZOSTAJĄ i mają własną deklarację „Photo and Video Permissions"
+    w Play Console — galeria jest tu przypadkiem kanonicznym (systemowy Photo Picker nie daje funkcji galerii).
 - **Google Play**: konto `pietrus914`, EAS `@pietrus914/gallery-ai`, pakiet `com.glue010.galleryai`, `eas.json` (profil
   `production` → AAB). Pierwszy AAB: v0.924 / vc 9240 (AI w trybie STUB — backend jeszcze nie na Railway). Grafiki + opisy
   EN w `store_assets/`. Polityka prywatności = publiczny Google Doc. Ikona launchera: zielony obiektyw (podmiana z placeholdera).

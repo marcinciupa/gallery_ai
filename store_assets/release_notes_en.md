@@ -3,6 +3,55 @@
 Google Play limit: **500 characters per language**. Paste the block below into
 Play Console → testing track → "What's new in this release" (en-US).
 
+## 0.969 (versionCode 9690) — Play block
+
+> Covers 0.968 (video) and 0.969 (permission removal). Under the 500-character limit.
+
+```
+Videos are now part of the gallery: thumbnails with their length, a built-in player with a scrubbable progress bar, and a PHOTOS / VIDEOS filter.
+
+Gallery+ no longer asks for the "All files access" permission. Moving and deleting photos that other apps created now goes through Android's standard media flow — one confirmation for the whole selection, not one per file.
+
+Fixed: cancelling a delete no longer removed the photo from the recycle bin.
+```
+
+## 0.969 — full changelog
+
+**Changed — permissions**
+
+- **`MANAGE_EXTERNAL_STORAGE` ("All files access") is gone.** Google Play rejected it twice: a
+  photo gallery is not on the list of permitted uses, and for media-only apps the policy requires
+  the MediaStore API. The permission never unlocked a feature here — it only suppressed Android's
+  confirmation dialog — so nothing stopped working.
+  - Deleting and MOVE now show **one system confirmation per batch** (1 photo or 300 — one dialog).
+  - Files the app itself created (copies, photos saved after an AI edit) are still deleted with no
+    dialog at all: an app may delete its own files without any special permission.
+  - COPY, creating folders, the recycle bin, restoring, and every AI edit are unchanged — they
+    never touched the permission.
+  - The "ALLOW FILE ACCESS?" prompt and its settings shortcut were removed.
+
+**Fixed**
+
+- **Cancelling a delete no longer empties the recycle bin entry.** The entry was removed from the
+  bin whatever the user answered, so declining the system dialog left the photo undeleted *and*
+  out of the bin — it reappeared in the gallery as if it had never been thrown away.
+- **A denied MOVE can no longer lose a photo.** A mixed selection deletes the app's own files
+  immediately and asks about the rest; if the user declined, the rollback used to delete every
+  copy — including copies whose original was already gone. Only true duplicates are cleaned up now.
+- **No more silent skips when deleting.** A file with an unreadable path used to be skipped by both
+  paths — no delete, no dialog, no error — and reported as success. Every file now either really
+  goes, or goes through the system dialog.
+- The 30-day recycle bin purge runs **when the bin is opened**, not at app start, so its
+  confirmation dialog no longer greets the user out of context. It announces itself first, and a
+  declined purge is retried the next time the bin is opened instead of being skipped for the session.
+- **Moving into a new folder whose name matches an existing one can no longer wipe that folder.**
+  Android resolves `Album.create` onto an existing bucket when the directory already exists, and the
+  old rollback then deleted *every* asset in it — reachable whenever the colliding folder was hidden,
+  filtered out in Settings, or entirely in the recycle bin. The collision is now detected up front
+  (the photos simply move into that folder) and the rollback never deletes an album, only its own copies.
+- A declined move no longer raises a **second** system dialog while cleaning up its copies.
+- A partial delete is now reported as such ("3 OF 5 DELETED") instead of claiming full success.
+
 ## 0.9635 (versionCode 9635) — Play block
 
 > Covers everything since 0.958. If 0.959–0.9625 already went out on this track,

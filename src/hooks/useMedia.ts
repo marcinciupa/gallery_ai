@@ -117,21 +117,26 @@ export function useMedia() {
   const reload = () => setReloadN((n) => n + 1);
 
   /**
-   * Usuwanie z biblioteki (TRWAŁE — brak wbudowanego kosza). `assetUris` = content:// URI zdjęć (Asset.delete),
-   * `albumIds` = id albumów (Album.delete; na Androidzie kasuje też zawartość). Android pokazuje SYSTEMOWY
-   * dialog potwierdzenia usunięcia. Po zakończeniu wołający robi `reload()`, by odświeżyć siatkę.
+   * Trwałe kasowanie. Zwraca klucze, które FAKTYCZNIE zniknęły — nie `void`, bo od 0.969 apka nie ma już
+   * „dostępu do wszystkich plików" i systemowe okno zgody jest normalnym elementem przepływu. Wołający
+   * (kosz) MUSI wiedzieć, czego użytkownik nie zgodził się skasować: wcześniej wpis znikał z kosza niezależnie
+   * od odpowiedzi, więc odmowa oznaczała, że zdjęcie wracało do galerii jako „nieskasowane, ale i nie w koszu".
    */
-  const deleteItems = async (assetUris: string[], albumIds: string[]): Promise<void> => {
-    if (Platform.OS === 'web') return;
-    const ML: any = await import('expo-media-library');
-    if (assetUris.length) {
-      // przez mediaOps.deleteAssets: gdy apka ma „dostęp do wszystkich plików", kasuje BEZ systemowego okna
-      // (stare API woła contentResolver.delete wprost); bez uprawnienia spada na okno zgody jak dotąd
-      try { await deleteAssets(assetUris); } catch { /* odmowa/anulowanie systemowego dialogu */ }
-    }
+  const deleteItems = async (assetUris: string[], albumIds: string[]): Promise<string[]> => {
+    // Na webie (podgląd designu) nic realnie nie kasujemy, ale musimy oddać klucze jako skasowane — inaczej
+    // wołający uzna operację za odrzuconą przez użytkownika i kosz w podglądzie nigdy się nie opróżni.
+    if (Platform.OS === 'web') return [...assetUris, ...albumIds];
+    const gone: string[] = [];
+    if (assetUris.length) gone.push(...(await deleteAssets(assetUris)));
     if (albumIds.length) {
-      try { await ML.Album.delete(albumIds.map((id) => new ML.Album(id))); } catch { /* j.w. */ }
+      const ML: any = await import('expo-media-library');
+      // Album kasuje się razem z zawartością → jedno okno na cały album, wynik jest zero-jedynkowy.
+      try {
+        await ML.Album.delete(albumIds.map((id) => new ML.Album(id)));
+        gone.push(...albumIds);
+      } catch { /* odmowa/anulowanie systemowego okna → album zostaje */ }
     }
+    return gone;
   };
 
   /**

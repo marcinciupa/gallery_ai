@@ -54,7 +54,7 @@ draw = ImageDraw.Draw(fg)
 title_font = ImageFont.truetype(KODE500, 76)
 tag_font = ImageFont.truetype(KODE400, 25)
 
-title = "Gallery_AI"
+title = "Gallery+"  # nazwa po rebrandzie 2026-07-24 — MUSI zgadzac sie z app.json expo.name
 tx = center_x(draw, title, title_font, 1024)
 glow_text(fg, (tx, 26), title, title_font, PHOSPHOR, GLOW, radius=12)
 
@@ -66,6 +66,9 @@ fg.convert("RGB").save("store_assets/feature_graphic_1024x500.png", optimize=Tru
 print("feature ->", Image.open("store_assets/feature_graphic_1024x500.png").size)
 
 # ---------- IKONA 512x512 ----------
+# ⚠️ UWAGA: to nadpisuje `app_icon_512.png` starym `raw/icon_raw.png` (sprzed rebrandu „+"). Obowiązująca
+# ikona pochodzi z Figmy (`gallery_plus_icon_google_play`, patrz CLAUDE.md). Po uruchomieniu skryptu dla
+# samej grafiki głównej przywróć ikonę: `git checkout -- store_assets/app_icon_512.png`.
 icon = Image.open("store_assets/raw/icon_raw.png").convert("RGB")
 icon.resize((512, 512), Image.LANCZOS).save("store_assets/app_icon_512.png", optimize=True)
 print("icon ->", Image.open("store_assets/app_icon_512.png").size)
