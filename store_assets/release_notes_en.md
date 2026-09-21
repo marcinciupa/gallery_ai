@@ -3,6 +3,31 @@
 Google Play limit: **500 characters per language**. Paste the block below into
 Play Console → testing track → "What's new in this release" (en-US).
 
+## 0.970 (versionCode 9700) — Play block
+
+```
+No more confirmation on every move and delete: turn on media management once (Android 12 and newer) and Gallery+ moves and deletes the photos you select without Android asking each time. It covers photos and videos only.
+
+Video fixes: the player now shows play/pause and progress correctly, and videos are marked with their length inside folders, in Moments and on folder covers.
+```
+
+## 0.970 — full changelog
+
+**New**
+
+- **Media management (`MANAGE_MEDIA`, Android 12+).** Before the first MOVE or permanent delete in a
+  session, Gallery+ asks "ALLOW MEDIA MANAGEMENT?". ALLOW opens Android's switch; back in the app the
+  operation finishes on its own, with no system dialog — now or later. SKIP runs it as before, with
+  Android's confirmation. Covers photos and videos only; not a restricted permission on Google Play.
+  Android 11 has no such switch and keeps the confirmation.
+
+**Fixed**
+
+- **Video player state.** A video played (picture and sound), but the key kept showing PLAY, the big
+  play triangle stayed on screen and the progress bar sat at 0:00.
+- **Video badge everywhere.** The play triangle and length were shown only in the Feed; inside
+  folders, in Moments and on folder covers a video looked like a photo.
+
 ## 0.969 (versionCode 9690) — Play block
 
 > Covers 0.968 (video) and 0.969 (permission removal). Under the 500-character limit.
