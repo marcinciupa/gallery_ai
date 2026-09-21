@@ -9,7 +9,7 @@
  * Źródło zdjęć: MOCK (assets/mock) — realne z expo-media-library później.
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, Pressable, Platform, FlatList, PanResponder, LayoutChangeEvent, ImageSourcePropType, TextInput } from 'react-native';
+import { View, Text, Pressable, Platform, AppState, FlatList, PanResponder, LayoutChangeEvent, ImageSourcePropType, TextInput } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { color, font, screen, textShadow, dims } from '../theme/tokens';
 import type { KeyboardConfig } from '../components/chrome/Keyboard';
@@ -24,6 +24,7 @@ import { useImageEditor } from './EditorScreen';
 import { MOCK_FOLDERS, type Folder } from './mockFolders';
 import { Diag, DIAG_ALL } from '../lib/diag';
 import { moveToAlbum, copyToAlbum, createAlbumWith, isValidAlbumName, MediaOpResult } from '../lib/mediaOps';
+import { mediaManageSupported, canManageMedia, openMediaManageSettings } from '../lib/mediaManage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const PREFS_KEY = 'gallery_ai:view_prefs'; // zapamiętane preferencje widoku galerii
@@ -386,6 +387,12 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // wzorzec z promptu AI). Po zamknięciu klawiatury klawisze CREATE/CANCEL wracają.
   const [nameFocus, setNameFocus] = useState(false);
   const nameInputRef = useRef<TextInput>(null);
+  // Prośba o „zarządzanie multimediami" (MANAGE_MEDIA) — pokazywana RAZ na uruchomienie, dokładnie w chwili,
+  // gdy jest potrzebna (pierwsze MOVE / trwałe kasowanie), zamiast wiersza w ustawieniach. Trzyma zawieszoną
+  // operację, żeby po powrocie z ekranu systemowego dokończyć ją bez powtarzania całej ścieżki.
+  // (Ten sam przepływ co dawne „ALLOW FILE ACCESS?" z 0.968 — zmieniło się tylko uprawnienie pod spodem.)
+  const [accessAsk, setAccessAsk] = useState<null | { run: () => void }>(null);
+  const accessAsked = useRef(false);
 
   // KURSOR chowany podczas swipe-follow i przytrzymania joysticka (wraca po zatrzymaniu). Nie zmienia `selected`,
   // tylko renderowaną ramkę (auto-scroll dalej działa na realnym `selected`).
@@ -834,7 +841,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // poziomie EKRANU, bo panel centruje się w pionie względem całego ekranu urządzenia.
   // Treść i menu pod dialogiem WYGASZONE do 25% — wartość Z PROJEKTU, jedna dla całej apki (tyle samo co pod
   // otwartym menu). UWAGA: kod rec_ai ma w tym miejscu 0.35 i odbiega od makiety — nie brać go tu za wzorzec.
-  const dialogOpen = delPhase !== 'none';
+  const dialogOpen = delPhase !== 'none' || !!accessAsk;
   const overlays = (
     <>
       {/* kolor panelu wg FAZY (nie wg trwałości): pytanie = czerwone, wynik = fosforowy */}
@@ -849,6 +856,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
           sub={delPhase === 'choose' && holding ? 'THIS CANNOT BE UNDONE' : delMsg.sub}
         />
       ) : null}
+      {accessAsk ? <OverlayPanel tone="phosphor" title="ALLOW MEDIA MANAGEMENT?" sub="WITHOUT IT ANDROID ASKS FOR CONFIRMATION ON EVERY MOVE AND DELETE" /> : null}
     </>
   );
 
@@ -1115,6 +1123,13 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     const keys = Array.from(selectedIds);
     const label = targetLabel(keys);
     setHolding(false);
+    // Trwałe kasowanie cudzych zdjęć bez MANAGE_MEDIA = systemowe okno. Pytamy WCZEŚNIEJ, żeby ścieżka nie
+    // wyglądała tak: okno systemu → dopiero potem prośba o przełącznik, który by je wyłączył.
+    if (permanent && needsAccessAsk()) {
+      setDelPhase('none');
+      setAccessAsk({ run: () => { void confirmDelete(permanent); } });
+      return;
+    }
     // Po potwierdzeniu zostaje sam TOAST — panel wyniku niczego już nie wnosił: decyzja jest podjęta, a UNDO
     // przy trwałym kasowaniu i tak nie istnieje. Kosz ma własne cofnięcie (RESTORE), więc i tam panel zbędny.
     setDelPhase('none');
@@ -1173,10 +1188,43 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   );
   const nameOk = isValidAlbumName(newName) && !nameTaken;
 
+  // Czy pytać o MANAGE_MEDIA: Android 12+, przełącznik wyłączony, w tym uruchomieniu jeszcze nie pytaliśmy.
+  // Raz na URUCHOMIENIE, nie raz na zawsze: trwała flaga sprawiłaby, że jedno SKIP odcina przyznanie na stałe
+  // (wiersza w ustawieniach apki nie ma).
+  const needsAccessAsk = () => !DESIGN && !accessAsked.current && mediaManageSupported() && !canManageMedia();
+  const awaitingAccess = useRef(false); // wyszliśmy do ustawień systemu i czekamy na powrót
+  const finishAccessAsk = (grant: boolean) => {
+    const pending = accessAsk;
+    accessAsked.current = true;
+    if (!pending) { setAccessAsk(null); return; }
+    if (grant && openMediaManageSettings()) { awaitingAccess.current = true; return; } // dokończymy po powrocie
+    setAccessAsk(null);
+    pending.run();
+  };
+  // Powrót z ekranu systemowego → dokańczamy zawieszoną akcję (z przełącznikiem albo bez, jak zdecydował user).
+  // Restart nie jest potrzebny: stan przełącznika system sprawdza przy każdej prośbie, nie przy starcie procesu.
+  useEffect(() => {
+    if (!accessAsk) return;
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st !== 'active' || !awaitingAccess.current) return;
+      awaitingAccess.current = false;
+      const pending = accessAsk;
+      setAccessAsk(null);
+      pending.run();
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessAsk]);
 
+  /** Brama uprawnienia: MOVE kasuje oryginał, a bez MANAGE_MEDIA system pyta o zgodę przy każdym takim kasowaniu. */
   const runFileOp = async (targetId: string | null, name?: string) => {
     if (!pick) return;
     const { op, keys } = pick;
+    if (op === 'MOVE' && needsAccessAsk()) {
+      setPick(null); setNaming(false); setNewName(''); setNameFocus(false);
+      setAccessAsk({ run: () => { void execFileOp(op, keys, targetId, name); } });
+      return;
+    }
     await execFileOp(op, keys, targetId, name);
   };
 
@@ -1246,6 +1294,7 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
 
   // back: kolejno zamknij MENU → (edytor: menu edycji/pod-widok, a na końcu podgląd) → folder → feed
   const goBack = () => {
+    if (accessAsk) { setAccessAsk(null); return true; }        // prośba o przełącznik = anulowanie operacji
     if (naming) { setNaming(false); setNewName(''); setNameFocus(false); return true; } // nazwa nowego folderu → wróć do siatki celów
     if (pick) { cancelPick(); return true; }                            // picker → wróć do zaznaczenia/siatki
     if (delPhase === 'confirm' || delPhase === 'choose') { cancelDelete(); return true; }
@@ -1462,6 +1511,16 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
     joystick: { highlighted: false },
   };
 
+  // KLAWIATURA prośby o MANAGE_MEDIA: ALLOW wychodzi do systemowego przełącznika, SKIP robi operację
+  // po staremu (z systemowym oknem zgody).
+  const accessKeyboard: KeyboardConfig = {
+    screen: [
+      { label: 'ALLOW', variant: 'primary', onPress: () => finishAccessAsk(true) },
+      { label: 'SKIP', onPress: () => finishAccessAsk(false) },
+    ],
+    metal: [{ type: 'label', upper: '' }, { type: 'label', upper: '' }],
+    joystick: { highlighted: false },
+  };
 
   // KLAWIATURA PICKERA (wybór folderu docelowego): NEW FOLDER · [joy: nawigacja + wybór] · BACK.
   const pickKeyboard: KeyboardConfig = {
@@ -1827,7 +1886,9 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   );
 
   const finalContent = pick ? pickerContent : viewerOpen ? viewerContent : content;
-  const finalKeyboard = naming
+  const finalKeyboard = accessAsk
+    ? accessKeyboard
+    : naming
       ? nameKeyboard
       : pick
         ? pickKeyboard

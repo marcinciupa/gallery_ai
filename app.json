@@ -2,7 +2,7 @@
   "expo": {
     "name": "Gallery+",
     "slug": "gallery-ai",
-    "version": "0.969",
+    "version": "0.970",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -12,7 +12,7 @@
     },
     "android": {
       "package": "com.glue010.galleryai",
-      "versionCode": 9690,
+      "versionCode": 9700,
       "blockedPermissions": [
         "android.permission.ACTIVITY_RECOGNITION"
       ],
@@ -21,7 +21,10 @@
         "foregroundImage": "./assets/android-icon-foreground.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.MANAGE_MEDIA"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"

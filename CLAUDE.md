@@ -111,9 +111,12 @@ Realny skeuomorfizm (tekstura, haptyka, tilt) tylko natywnie (Expo Go / dev buil
     PRZEŻYŁ, inaczej traci się zdjęcie.
   - Auto-czyszczenie kosza po 30 dniach odpala się **przy wejściu do kosza**, nie przy starcie apki — inaczej
     okno zgody wyskakiwałoby użytkownikowi na powitanie, bez kontekstu.
-  - Jeśli kiedyś wrócimy do „zero okien": `MANAGE_MEDIA` (Android 12+) wycisza te same okna i **nie jest** na
-    liście uprawnień ograniczonych Play (bez formularza i bez recenzji polityki). Osobna iteracja, NIE w tym
-    samym wydaniu co tłumaczenie się z poprzedniego uprawnienia.
+  - **„Zero okien" = `MANAGE_MEDIA` (0.970)** — „Aplikacje do zarządzania multimediami", Android 12+. Z włączonym
+    przełącznikiem system SAM zatwierdza createDeleteRequest/createWriteRequest (trwałe DELETE i MOVE bez okna;
+    zweryfikowane na emulatorze 2026-09-21: OFF → okno, ON → brak okna, pliki realnie skasowane/przeniesione).
+    Nie jest na liście uprawnień ograniczonych Play (bez formularza). Stan i ekran ustawień daje lokalny moduł
+    natywny `modules/media-manage` (`src/lib/mediaManage.ts`); prośba = panel „ALLOW MEDIA MANAGEMENT?" +
+    ALLOW/SKIP przed pierwszym MOVE / trwałym kasowaniem, raz na uruchomienie. Android 11 dalej pyta.
   - `READ_MEDIA_IMAGES` / `READ_MEDIA_VIDEO` ZOSTAJĄ i mają własną deklarację „Photo and Video Permissions"
     w Play Console — galeria jest tu przypadkiem kanonicznym (systemowy Photo Picker nie daje funkcji galerii).
 - **Google Play**: konto `pietrus914`, EAS `@pietrus914/gallery-ai`, pakiet `com.glue010.galleryai`, `eas.json` (profil
