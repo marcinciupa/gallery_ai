@@ -31,7 +31,7 @@ yarn-error.*
 .env
 
 # build artifacts
-android/
+/android/
 ios/
 *.apk
 *.aab

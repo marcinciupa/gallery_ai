@@ -1,0 +1,7 @@
+expo.modules.mediamanage.media-manage-pngs-0 /home/glue010/projects/gallery_ai-mediatest/modules/media-manage/android/build/generated/res/pngs/release
+expo.modules.mediamanage.media-manage-resValues-1 /home/glue010/projects/gallery_ai-mediatest/modules/media-manage/android/build/generated/res/resValues/release
+expo.modules.mediamanage.media-manage-mergeReleaseResources-2 /home/glue010/projects/gallery_ai-mediatest/modules/media-manage/android/build/intermediates/incremental/release/mergeReleaseResources/merged.dir
+expo.modules.mediamanage.media-manage-mergeReleaseResources-3 /home/glue010/projects/gallery_ai-mediatest/modules/media-manage/android/build/intermediates/incremental/release/mergeReleaseResources/stripped.dir
+expo.modules.mediamanage.media-manage-release-4 /home/glue010/projects/gallery_ai-mediatest/modules/media-manage/android/build/intermediates/merged_res/release/mergeReleaseResources
+expo.modules.mediamanage.media-manage-main-5 /home/glue010/projects/gallery_ai-mediatest/modules/media-manage/android/src/main/res
+expo.modules.mediamanage.media-manage-release-6 /home/glue010/projects/gallery_ai-mediatest/modules/media-manage/android/src/release/res
