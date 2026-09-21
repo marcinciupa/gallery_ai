@@ -20,6 +20,7 @@ import { scrollFlag } from '../components/PerfHud';
 import { applyLibraryFilter, momentsFolderIds } from '../hooks/useLibraryFilter';
 import { FeedGridHandle, FeedGrid, packFeed } from '../components/FeedGrid';
 import { MomentsGrid, MomentsGridHandle } from '../components/MomentsGrid';
+import { VideoBadge } from '../components/VideoBadge';
 import { useImageEditor } from './EditorScreen';
 import { MOCK_FOLDERS, type Folder } from './mockFolders';
 import { Diag, DIAG_ALL } from '../lib/diag';
@@ -125,6 +126,9 @@ function PhosphorCover({ source, size, selected, images = true, ai: aiProp, badg
         </>
       ) : null}
       {badges && images && source ? <ThumbBadges ai={ai} raw={raw} fg={chrome} /> : null}
+      {/* wideo: trójkąt play + długość. Kafle WEWNĄTRZ folderu, w MOMENTS i okładki folderów idą przez
+          PhosphorCover, a nie przez FeedGrid — badge musi być w OBU miejscach. */}
+      {images ? <VideoBadge source={source} chrome={chrome} /> : null}
       {check != null ? <TileCheck on={check} fg={chrome} /> : null}
     </View>
   );

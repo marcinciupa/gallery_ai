@@ -42,30 +42,28 @@ export const VideoStage = forwardRef<VideoStageHandle, {
   const [posMs, setPosMs] = useState(0);
   const [totalMs, setTotalMs] = useState(metaMs ?? 0);
 
-  // stan odtwarzania — zdarzenie playingChange (rzadkie, więc bezpiecznie w stanie)
+  // Stan odtwarzania i pozycję ODPYTUJEMY, nie nasłuchujemy.
+  //
+  // ⚠️ ZNALEZIONE NA EMULATORZE (v0.968): `player.addListener('playingChange', …)` nie dociera do JS —
+  // film startował (ExoPlayer w logcacie tworzył dekoder), ale klawisz dalej pokazywał PLAY, duży trójkąt
+  // nie znikał, a pasek stał na 0:00. Objaw mylący, bo wygląda jak „nie odtwarza", a dźwięk i obraz idą.
+  // Właściwości `player.playing` / `currentTime` / `duration` są wiarygodne, więc czytamy je interwałem.
+  // 250 ms wystarcza paskowi, a timer żyje tylko póki otwarty jest film.
   useEffect(() => {
-    const sub = player.addListener('playingChange', (e: any) => {
-      const p = !!(e?.isPlaying ?? e);
-      setPlaying(p);
-      onPlayingChange?.(p);
-    });
-    return () => sub.remove();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [player]);
-
-  // pozycja: odpytujemy tylko w trakcie grania (patrz nagłówek)
-  useEffect(() => {
-    if (!playing) return;
-    const id = setInterval(() => {
+    const read = () => {
       try {
+        const p = player.playing;
+        setPlaying((prev) => { if (prev !== p) onPlayingChange?.(p); return p; });
         setPosMs(Math.max(0, Math.round(player.currentTime * 1000)));
         const d = player.duration;
         if (Number.isFinite(d) && d > 0) setTotalMs(Math.round(d * 1000));
       } catch { /* player mógł już zniknąć */ }
-    }, 250);
+    };
+    read();
+    const id = setInterval(read, 250);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playing, player]);
+  }, [player]);
 
   // zmiana pliku (PREV/NEXT) → od zera i bez grania
   useEffect(() => { setPosMs(0); setPlaying(false); setTotalMs(metaMs ?? 0); }, [uri, metaMs]);
