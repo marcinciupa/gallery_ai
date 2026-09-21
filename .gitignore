@@ -32,6 +32,7 @@ yarn-error.*
 
 # build artifacts
 /android/
+modules/*/android/build/
 ios/
 *.apk
 *.aab
