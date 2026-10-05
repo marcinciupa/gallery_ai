@@ -78,13 +78,16 @@ Realny skeuomorfizm (tekstura, haptyka, tilt) tylko natywnie (Expo Go / dev buil
     kasuje tylko kopie, których oryginał PRZEŻYŁ, inaczej traci się zdjęcie.
   - `Album.create` przy kolizji nazwy oddaje ISTNIEJĄCY album, a `Album.delete` kasuje CAŁĄ jego zawartość —
     dlatego kolizję wykrywamy przez `Album.get` przed utworzeniem, a rollback NIGDY nie kasuje albumu.
+  - **„Zero okien" = `MANAGE_MEDIA` (0.970)** — „Aplikacje do zarządzania multimediami", Android 12+. Z włączonym
+    przełącznikiem system sam zatwierdza trwałe DELETE i MOVE (bez okna). Nie jest ograniczone przez Play (bez
+    deklaracji). Moduł natywny `modules/media-manage` + `src/lib/mediaManage.ts`; prośba „ALLOW MEDIA MANAGEMENT?"
+    (ALLOW/SKIP) przed pierwszym MOVE / trwałym kasowaniem, raz na uruchomienie. Android 11 dalej pyta.
   - `READ_MEDIA_IMAGES`/`READ_MEDIA_VIDEO` zostają i mają własną deklarację „Photo and Video Permissions".
 - **Google Play**: konto `pietrus914`, EAS `@pietrus914/gallery-ai`, pakiet `com.glue010.galleryai`, `eas.json` (profil
   `production` → AAB). Pierwszy AAB: v0.924 / vc 9240 (AI w trybie STUB — backend jeszcze nie na Railway). Grafiki + opisy
   EN w `store_assets/`. Polityka prywatności = publiczny Google Doc. Ikona launchera: zielony obiektyw (podmiana z placeholdera).
-- **NASTĘPNY KROK**: proxy na Railway ✅, `EXPO_PUBLIC_API_URL` w `.env` + w EAS env `production` ✅, bump 0.925/vc 9241 ✅,
-  testy (tsc + expo-doctor 21/21) ✅, build AAB v0.925/vc 9241 z AI produkcyjnym w toku na EAS.
-  Zostało: pobrać AAB i **wysłać na Google Play** (ew. `eas submit -p android --profile production`).
+- **STAN 2026-09-21 (v0.970)**: w sklepie 0.969; na `main` gotowe 0.970 (`MANAGE_MEDIA` + poprawki wideo, opisy
+  sklepowe i polityka zaktualizowane). Szczegóły w `CLAUDE.md`.
 
 ## Kluczowe decyzje designowe (podjęte)
 - **Tryb wyświetlania ekranu = wybór użytkownika, 3 poziomy** (§11b.1): IMMERSIVE (B&W+fosfor+matryca),
