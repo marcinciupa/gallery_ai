@@ -109,7 +109,13 @@ export async function ensureLocalFile(uri: string): Promise<string> {
 
   if (/^https?:/i.test(uri)) {
     const ext = (uri.match(EXT_RE)?.[1] ?? 'png').toLowerCase();
-    const { uri: local } = await FileSystem.downloadAsync(uri, await workDest(ext));
+    const { uri: local, status } = await FileSystem.downloadAsync(uri, await workDest(ext));
+    // downloadAsync NIE rzuca przy 4xx/5xx — zapisuje treść błędu (np. XML z S3 po wygaśnięciu podpisanego linku)
+    // jako „obraz". Bez tej kontroli śmieć stawał się obrazem roboczym, a SAVE wrzucał go do galerii jako „SAVED".
+    if (status < 200 || status >= 300) {
+      await FileSystem.deleteAsync(local, { idempotent: true }).catch(() => {});
+      throw new Error(`DOWNLOAD FAILED (${status})`);
+    }
     return local;
   }
 
@@ -126,15 +132,24 @@ export async function ensureLocalFile(uri: string): Promise<string> {
  * odrzuca za dużą rozdzielczość wejścia (422 „invalid image dimensions"), więc duże zdjęcia zmniejszamy.
  */
 export async function bakeOrientation(uri: string, maxDim?: number): Promise<string> {
+  // API kontekstowe zamiast dwóch manipulateAsync: render (dekodowanie z EXIF — ta sama ścieżka natywna, której
+  // używa manipulateAsync) daje wymiary BEZ zapisu, więc PNG kodujemy raz, już po zmniejszeniu. Wcześniej zdjęcie
+  // 50 MP było najpierw zapisywane jako pełnowymiarowy PNG (sekundy + setki MB), a dopiero potem zmniejszane.
+  const ctx = ImageManipulator.ImageManipulator.manipulate(uri);
+  const refs: { release(): void }[] = [ctx];
   try {
-    const r = await ImageManipulator.manipulateAsync(uri, [], { format: ImageManipulator.SaveFormat.PNG });
-    const longest = Math.max(r.width, r.height);
-    if (!maxDim || longest <= maxDim) return r.uri;
-    // zmniejsz proporcjonalnie: ustawiamy tylko dłuższy bok = maxDim, manipulator dobiera drugi z zachowaniem proporcji
-    const resize = r.width >= r.height ? { width: maxDim } : { height: maxDim };
-    const capped = await ImageManipulator.manipulateAsync(r.uri, [{ resize }], { format: ImageManipulator.SaveFormat.PNG });
-    return capped.uri;
+    let img = await ctx.renderAsync();
+    refs.push(img);
+    if (maxDim && Math.max(img.width, img.height) > maxDim) {
+      // zmniejsz proporcjonalnie: ustawiamy tylko dłuższy bok = maxDim, manipulator dobiera drugi z zachowaniem proporcji
+      ctx.resize(img.width >= img.height ? { width: maxDim } : { height: maxDim });
+      img = await ctx.renderAsync();
+      refs.push(img);
+    }
+    return (await img.saveAsync({ format: ImageManipulator.SaveFormat.PNG })).uri;
   } catch {
     return uri;
+  } finally {
+    for (const r of refs) r.release(); // natywne bitmapy — zwolnij od razu, nie czekaj na GC
   }
 }

@@ -2,9 +2,8 @@
  * Klient edycji obrazu AI (deAPI / model z-image). Wzorzec z rec_ai: klucz API trzyma cienki BACKEND-PROXY,
  * nigdy bundle apki — apka woła proxy, proxy forwarduje do deAPI. Baza z `EXPO_PUBLIC_API_URL`.
  *
- * STAN: STUB. Dopóki `EXPO_PUBLIC_API_URL` nie jest ustawione, `editImage` zwraca wejściowy obraz po
- * krótkim opóźnieniu (echo) — pełny przepływ UI działa bez backendu. Po postawieniu proxy wystarczy
- * ustawić env; realna ścieżka (multipart image+prompt → { uri }) jest już poniżej.
+ * Bez `EXPO_PUBLIC_API_URL` (AI_STUB) każda funkcja zwraca wejściowy obraz po krótkim opóźnieniu (echo) —
+ * przepływ UI działa bez backendu. Produkcyjnie env wskazuje proxy na Railway (patrz CLAUDE.md, EAS env).
  */
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';

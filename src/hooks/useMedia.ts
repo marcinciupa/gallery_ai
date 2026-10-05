@@ -187,6 +187,6 @@ export function useMedia() {
       const a = res?.[0];
       return a ? (a.city || a.subregion || a.region || a.country || null) : null;
     } catch { return null; }
-  };;
+  };
   return { folders, status, error, loadPhotos, deleteItems, reload, placeOfAsset };
 }

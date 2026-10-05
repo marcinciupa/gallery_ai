@@ -134,8 +134,15 @@ Realny skeuomorfizm (tekstura, haptyka, tilt) tylko natywnie (Expo Go / dev buil
 - **STAN 2026-07-31 (v0.9635 / vc 9635)**: backend z maską WDROŻONY na Railway i sprawdzony e2e po produkcyjnym
   URL-u (`/health` → `masking: true, webhooks: true`; trasy 9–17 s, mieszczą się w 90 s limitu apki). AAB
   zbudowany na EAS i PRZETESTOWANY na emulatorze (Pixel 7 API 34, AAB → bundletool → APK): start, galeria,
-  malowanie maski, MAGIC ERASE przez produkcyjny backend, SAVE do galerii, CROP → SAVE.
-  **Zostało: wysłać AAB na Google Play** + wkleić „What's new" ze `store_assets/release_notes_en.md`.
+  malowanie maski, MAGIC ERASE przez produkcyjny backend, SAVE do galerii, CROP → SAVE. Wysłane na Play.
+- **STAN 2026-09-21 (v0.970 / vc 9700)**: w sklepie jest 0.969 (bez „dostępu do wszystkich plików"). Na `main`
+  gotowe 0.970 = `MANAGE_MEDIA` + poprawki wideo, przetestowane na emulatorze; opisy sklepowe, „What's new"
+  i polityka prywatności zaktualizowane. Build AAB + publikację robi kolega (konto Play). Polityka w Play to
+  Google Doc — nowy tekst wkleić ręcznie.
+- **2026-10-05 — poprawki po przeglądzie** (na `main`, w 0.970): backend ZMIENIONY — limity `/api` (per IP
+  `RATE_PER_MIN`=12/min, globalnie `MAX_CONCURRENT`=6 → 429) + wspólny budżet 80 s dla wieloprzebiegowego FILL.
+  Kontrakt z apką bez zmian, więc `railway up` można zrobić niezależnie od wydania apki. deAPI (sprawdzone
+  2026-10-05) nadal NIE ma maskowanego inpaintingu — kompozycja z maską po stronie proxy zostaje.
 - **Jak przetestować AAB bez telefonu**: `bundletool build-apks --mode=universal` → `adb install`; emulator
   `Pixel_7_API_34` jest w SDK. Uwaga: AVD bywa na granicy miejsca — `INSTALL_FAILED_INSUFFICIENT_STORAGE`
   leczy `pm trim-caches`.

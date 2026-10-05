@@ -159,13 +159,14 @@ function AppInner() {
     if (fontsLoaded) SplashScreen.hideAsync().catch(() => {});
   }, [fontsLoaded]);
 
+  // INSETY systemowe: górny pasek (status) + DOLNY navbar (3-przyciski/gesty). Bez dolnego insetu navbar
+  // nachodził na klawiaturę aplikacji. Tylko w trybie „device" (fullscreen celowo idzie edge-to-edge).
+  // Hook PRZED wczesnym return (fonty) — inaczej liczba hooków zmieniała się między renderami (Rules of Hooks).
+  const insets = useSafeAreaInsets();
+
   if (!fontsLoaded) {
     return <View style={{ flex: 1, backgroundColor: '#000000' }} />;
   }
-
-  // INSETY systemowe: górny pasek (status) + DOLNY navbar (3-przyciski/gesty). Bez dolnego insetu navbar
-  // nachodził na klawiaturę aplikacji. Tylko w trybie „device" (fullscreen celowo idzie edge-to-edge).
-  const insets = useSafeAreaInsets();
   const isDevice = variant === 'device';
   const topInset = Platform.OS === 'android' && isDevice ? RNStatusBar.currentHeight || 0 : 0;
   const bottomInset = isDevice ? insets.bottom : 0;

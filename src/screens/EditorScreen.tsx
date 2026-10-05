@@ -35,11 +35,12 @@ type EditView = 'viewer' | 'crop' | 'ai' | 'magicErase';
 
 // menu EDIT — dwupoziomowy pasek (Figma _AI 402:5258):
 //   • PASEK GŁÓWNY (zakładki trybu): AI EDIT / CROP & ROTATE
-//   • POD-PASEK (funkcje AI, tylko gdy AI EDIT): MAGIC ERASE / TEXT TO IMAGE / FILTERS
+//   • POD-PASEK (funkcje AI, tylko gdy AI EDIT): MAGIC ERASE / TEXT TO IMAGE / UPSCALE
 const MAIN_TABS = ['AI EDIT', 'CROP & ROTATE'] as const;
-const AI_FUNCS = ['MAGIC ERASE', 'TEXT TO IMAGE', 'UPSCALE', 'FILTERS'] as const;
+// FILTERS schowane, dopóki nie istnieje — w pasku wyglądało jak działająca funkcja, a dawało tylko toast „SOON".
+const AI_FUNCS = ['MAGIC ERASE', 'TEXT TO IMAGE', 'UPSCALE'] as const;
 const AI_TEXT2IMG = 1; // TEXT TO IMAGE (prompt edit)
-const AI_UPSCALE = 2;  // UPSCALE (jednoklik, RealESRGAN x4). FILTERS (3) = wciąż stub „SOON".
+const AI_UPSCALE = 2;  // UPSCALE (jednoklik, RealESRGAN x4)
 
 const PILL = { boxShadow: '0px 0px 4px 0px rgba(226,255,228,0.25)' } as const;
 
@@ -388,7 +389,7 @@ export function useImageEditor({
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuTier, setMenuTier] = useState<'main' | 'sub'>('main');
   const [mainIdx, setMainIdx] = useState(0); // AI EDIT / CROP & ROTATE / SETTINGS
-  const [aiIdx, setAiIdx] = useState(AI_TEXT2IMG); // MAGIC ERASE / TEXT TO IMAGE / FILTERS
+  const [aiIdx, setAiIdx] = useState(AI_TEXT2IMG); // MAGIC ERASE / TEXT TO IMAGE / UPSCALE
   // wynik edycji (crop/AI) trzymany w sesji edytora jako URI; podmienia wyświetlane zdjęcie.
   const [workingUri, setWorkingUri] = useState<string | null>(null);
   const cropRef = useRef<CropHandle>(null);
@@ -423,7 +424,7 @@ export function useImageEditor({
   const [boosting, setBoosting] = useState(false); // trwa ulepszanie promptu (prompt booster) przed edycją
   const [aiError, setAiError] = useState<string | null>(null);
   const inputRef = useRef<TextInput>(null);
-  // TOAST — krótki komunikat (zapis edycji / stub „SOON" / INFO)
+  // TOAST — krótki komunikat (zapis edycji / INFO)
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // FILL — po kadrze z obrotem zostały puste obszary → propozycja wypełnienia AI
@@ -482,12 +483,11 @@ export function useImageEditor({
   // TEXT TO IMAGE: ląduj w trybie maski (można malować zaznaczenie); klawiaturę promptu otwiera klawisz KEYBOARD.
   const enterAi = () => { setMainIdx(0); setMenuOpen(false); setView('ai'); };
   const enterMagicErase = () => { setMainIdx(0); setMenuOpen(false); setView('magicErase'); };
-  // pod-pasek funkcji AI: 0=MAGIC ERASE (stage), 1=TEXT TO IMAGE (prompt), 2=UPSCALE (jednoklik), 3=FILTERS (stub „SOON")
+  // pod-pasek funkcji AI: 0=MAGIC ERASE (stage), 1=TEXT TO IMAGE (prompt), 2=UPSCALE (jednoklik)
   const activateAiFunc = (i: number) => {
     if (i === 0) enterMagicErase();
     else if (i === AI_TEXT2IMG) enterAi();
     else if (i === AI_UPSCALE) runUpscale();
-    else showToast(`${AI_FUNCS[i]} — SOON`);
   };
   const chooseAiFunc = (i: number) => { setAiIdx(i); setMenuTier('sub'); activateAiFunc(i); };
   // pasek główny: AI EDIT → zejdź na pod-pasek funkcji; CROP & ROTATE → od razu akcja
@@ -590,10 +590,21 @@ export function useImageEditor({
   };
 
   // SAVE — zapis obrazu roboczego (edytowanego) do biblioteki; krótki feedback (toast)
+  // Blokada podwójnego tapnięcia (zapis trwa ~sekundę, a obraz roboczy zostaje po zapisie) + pamięć, który
+  // obraz już poszedł do galerii — inaczej każde wciśnięcie SAVE tworzyło kolejną kopię tego samego zdjęcia.
+  const savingRef = useRef(false);
+  const savedUriRef = useRef<string | null>(null);
   const saveWorking = async () => {
-    if (!workingUri) return;
-    const res = await saveImageToLibrary(workingUri, { ai: aiTools.length > 0 });
-    showToast(res === 'ok' ? 'SAVED' : res === 'denied' ? 'NO SAVE PERMISSION' : 'SAVE FAILED');
+    if (!workingUri || savingRef.current) return;
+    if (savedUriRef.current === workingUri) { showToast('ALREADY SAVED'); return; }
+    savingRef.current = true;
+    try {
+      const res = await saveImageToLibrary(workingUri, { ai: aiTools.length > 0 });
+      if (res === 'ok') savedUriRef.current = workingUri;
+      showToast(res === 'ok' ? 'SAVED' : res === 'denied' ? 'NO SAVE PERMISSION' : 'SAVE FAILED');
+    } finally {
+      savingRef.current = false;
+    }
   };
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
@@ -863,7 +874,7 @@ export function useImageEditor({
         ) : null}
 
         {/* MENU EDIT — dwupoziomowy pasek pod obrazem (Figma _AI), tylko w widoku VIEWER.
-            Pod-pasek funkcji AI (MAGIC ERASE / TEXT TO IMAGE / FILTERS) tylko gdy aktywna zakładka AI EDIT. */}
+            Pod-pasek funkcji AI (MAGIC ERASE / TEXT TO IMAGE / UPSCALE) tylko gdy aktywna zakładka AI EDIT. */}
         {menuOpen && view === 'viewer' ? (
           <View style={{ alignSelf: 'stretch', gap: 16 }}>
             {menuTier === 'sub' ? <MenuBar items={AI_FUNCS} index={aiIdx} focused onPick={chooseAiFunc} /> : null}
@@ -891,7 +902,7 @@ export function useImageEditor({
           </View>
         ) : null}
 
-        {/* toast (SAVE / SOON / INFO) — fosforowa pigułka przy górnej krawędzi (nie koliduje z dolnym menu) */}
+        {/* toast (SAVE / INFO) — fosforowa pigułka przy górnej krawędzi (nie koliduje z dolnym menu) */}
         {toast ? (
           <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 8, alignItems: 'center' }}>
             <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 2, backgroundColor: screen.olive.primary, ...(PILL as any) }}>

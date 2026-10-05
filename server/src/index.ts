@@ -58,6 +58,8 @@ const {
   RAILWAY_PUBLIC_DOMAIN,
   APP_KEY, //                              współdzielony sekret apka↔proxy (jeśli pusty → brak kontroli, tylko DEV)
   ALLOWED_ORIGINS, //                      CORS: lista originów po przecinku (domyślnie porty Expo web)
+  RATE_PER_MIN = '12', //                  ile żądań /api na minutę z jednego IP (każde = kredyty deAPI)
+  MAX_CONCURRENT = '6', //                 ile żądań AI naraz w całym procesie (mały kontener Railway)
   PORT = '8787',
 } = process.env;
 
@@ -89,6 +91,11 @@ const SUBMIT_TIMEOUT_MS = 30_000;     // górny limit na sam submit (upload obra
 const POLL_FETCH_TIMEOUT_MS = 10_000; // pojedynczy GET /jobs — krótki, żeby zawieszony poll nie blokował pętli deadline
 const RESULT_FETCH_TIMEOUT_MS = 20_000; // pobranie gotowego obrazu z deAPI (potrzebne tylko przy kompozycji)
 const MAX_RESULT_BYTES = 40 * 1024 * 1024; // sanity na pobierany wynik (obraz, nie film)
+// Żądania z KILKOMA przebiegami (GENERATIVE FILL, dziura po dziurze) dostają jeden wspólny budżet na całość,
+// z zapasem względem 90 s apki — każdy przebieg z osobnym 60+20 s potrafił skończyć się po ~124 s, czyli
+// TIMEOUT w apce, spalone kredyty i wyrzucone nawet te przebiegi, które się udały.
+const REQUEST_BUDGET_MS = 80_000;
+const DOWNLOAD_RESERVE_MS = 5_000; // ile z budżetu przebiegu zostawić na pobranie wyniku (zwykle ~1 s)
 
 // sharp: bez cache'a i na jednym wątku — kontener Railway ma mało RAM/rdzeni, a obrazy są małe (≤1536 px),
 // więc pula wątków libvips dawała tylko narzut i skoki pamięci.
@@ -97,6 +104,8 @@ sharp.concurrency(1);
 
 const app = express();
 app.disable('x-powered-by');
+// Railway = jeden proxy przed nami → req.ip bierze prawdziwy adres klienta z X-Forwarded-For (dla limitu per IP)
+app.set('trust proxy', 1);
 app.use(helmet());
 
 const origins = (ALLOWED_ORIGINS || 'http://localhost:8081,http://localhost:19006')
@@ -159,6 +168,44 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LIMITY — X-App-Key jedzie w bundlu apki (EXPO_PUBLIC_*), więc da się go wyciągnąć z APK. Bez limitów
+// wyciągnięty klucz = nieograniczone wydawanie kredytów deAPI. Dwa bezpieczniki, oba w pamięci procesu
+// (jedna instancja na Railway — nie potrzeba Redisa):
+//   • per IP: RATE_PER_MIN żądań na minutę (realny użytkownik robi ~2–4 edycje/min, bo każda trwa 9–17 s),
+//   • globalnie: MAX_CONCURRENT żądań naraz (każde trzyma połączenie do 60+ s i obraz w RAM-ie).
+// Odpowiedź 429 z { error } — apka pokazuje to jako „ERROR: …" tak samo jak inne błędy backendu.
+// ─────────────────────────────────────────────────────────────────────────────
+const RATE_LIMIT = Math.max(1, Number(RATE_PER_MIN) || 12);
+const CONCURRENCY_LIMIT = Math.max(1, Number(MAX_CONCURRENT) || 6);
+const hits = new Map<string, { count: number; start: number }>(); // IP → licznik w bieżącym oknie 60 s
+let inFlight = 0;
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, h] of hits) if (now - h.start >= 60_000) hits.delete(ip);
+}, 60_000).unref();
+
+app.use('/api', (req, res, next) => {
+  const now = Date.now();
+  const ip = req.ip || 'unknown';
+  const h = hits.get(ip);
+  if (!h || now - h.start >= 60_000) hits.set(ip, { count: 1, start: now });
+  else if (++h.count > RATE_LIMIT) {
+    res.setHeader('Retry-After', String(Math.ceil((h.start + 60_000 - now) / 1000)));
+    return res.status(429).json({ error: 'TOO MANY REQUESTS — try again in a minute' });
+  }
+  if (inFlight >= CONCURRENCY_LIMIT) {
+    res.setHeader('Retry-After', '15');
+    return res.status(429).json({ error: 'SERVER BUSY — try again shortly' });
+  }
+  inFlight++;
+  let released = false;
+  const release = () => { if (!released) { released = true; inFlight--; } };
+  res.on('finish', release);
+  res.on('close', release); // zerwane połączenie (apka odcięła po 90 s) też zwalnia slot
+  next();
+});
+
 app.get('/health', (_req, res) =>
   res.json({ ok: true, editModel: DEAPI_MODEL, bgModel: DEAPI_BG_MODEL, upscaleModel: DEAPI_UPSCALE_MODEL, steps: EDIT_STEPS, webhooks: WEBHOOKS_ON, masking: true }));
 
@@ -214,6 +261,9 @@ async function awaitResult(id: string, deadline: number): Promise<string> {
   let onDone!: (u: string) => void;
   let onFail!: (e: Error) => void;
   const viaWebhook = new Promise<string>((resolve, reject) => { onDone = resolve; onFail = reject; });
+  // webhook `job.failed` może przyjść, gdy pętla akurat czeka na poll, który zwróci URL — wtedy nikt już nie
+  // czeka na viaWebhook i odrzucenie byłoby nieobsłużone. Wyścig w pętli i tak dostaje błąd normalnie.
+  viaWebhook.catch(() => {});
   if (WEBHOOKS_ON) pending.set(id, { resolve: onDone, reject: onFail });
   try {
     while (Date.now() < deadline) {
@@ -231,16 +281,15 @@ async function awaitResult(id: string, deadline: number): Promise<string> {
 }
 
 /** submit + oczekiwanie na wynik pod JEDNYM budżetem czasu (obejmuje upload legs + czekanie). Zwraca URL wyniku. */
-async function runJob(kind: string, image: Buffer, fields: Record<string, string>): Promise<string> {
-  const deadline = Date.now() + OVERALL_TIMEOUT_MS;
+async function runJob(kind: string, image: Buffer, fields: Record<string, string>, deadline = Date.now() + OVERALL_TIMEOUT_MS): Promise<string> {
   const id = await submitJob(kind, image, fields, deadline);
   return awaitResult(id, deadline);
 }
 
 /** Skrót: edycja img2img promptem. deAPI v2 `edits` wymaga `seed` — losujemy per żądanie (różnorodność wyników). */
-function runEdit(image: Buffer, prompt: string): Promise<string> {
+function runEdit(image: Buffer, prompt: string, deadline?: number): Promise<string> {
   const seed = String(Math.floor(Math.random() * 1_000_000_000));
-  return runJob('edits', image, { prompt, model: DEAPI_MODEL, steps: String(EDIT_STEPS), seed });
+  return runJob('edits', image, { prompt, model: DEAPI_MODEL, steps: String(EDIT_STEPS), seed }, deadline);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -252,8 +301,8 @@ const MODEL_TARGET_SIDE = 768;
 
 /** GENERATIVE FILL: ile osobnych dziur wypełniamy z osobna (obrót daje maks. 4 rogi). Więcej → jeden wspólny wycinek. */
 const MAX_FILL_PARTS = 4;
-/** …i do której sekundy wolno ZACZĄĆ kolejny przebieg (apka odcina żądanie po 90 s). */
-const FILL_MORE_UNTIL_MS = 45_000;
+/** …i ile czasu z [[REQUEST_BUDGET_MS]] musi zostać, żeby w ogóle ZACZĄĆ kolejny przebieg (typowo 9–17 s). */
+const MIN_PASS_MS = 25_000;
 
 /** Rozmycie szwu, skalowane do wielkości zaznaczenia: małe zaznaczenie = wąskie przejście, duże = szersze. */
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
@@ -261,8 +310,9 @@ const paintedFeather = (bbox: Roi) => clamp(0.05 * Math.min(bbox.width, bbox.hei
 const alphaFeather = (facts: ImageFacts) => clamp(0.004 * Math.min(facts.width, facts.height), 2, 8);
 
 /** Pobiera gotowy obraz z deAPI (podpisany URL). Potrzebne tylko przy kompozycji — inaczej URL leci do apki. */
-async function downloadResult(url: string): Promise<Buffer> {
-  const r = await fetch(url, { signal: AbortSignal.timeout(RESULT_FETCH_TIMEOUT_MS) });
+async function downloadResult(url: string, until?: number): Promise<Buffer> {
+  const budget = until ? clamp(until - Date.now(), 1000, RESULT_FETCH_TIMEOUT_MS) : RESULT_FETCH_TIMEOUT_MS;
+  const r = await fetch(url, { signal: AbortSignal.timeout(budget) });
   if (!r.ok) throw Object.assign(new Error(`pobranie wyniku ${r.status}`), { status: 502 });
   const buf = Buffer.from(await r.arrayBuffer());
   if (buf.length > MAX_RESULT_BYTES) throw Object.assign(new Error('wynik deAPI za duży'), { status: 502 });
@@ -284,6 +334,7 @@ async function downloadResult(url: string): Promise<Buffer> {
 async function maskedEdit(
   image: Buffer, facts: ImageFacts, mask: Buffer, prompt: string, sigma: number,
   prepare?: (crop: Buffer, roi: Roi) => Promise<Buffer>, // np. zalepienie dziur przed wysyłką (FILL)
+  until?: number, // twardy koniec całego przebiegu (generacja + pobranie) — dla żądań wieloprzebiegowych
 ): Promise<Composed> {
   const bbox = maskBBox(mask, facts.width, facts.height);
   if (!bbox) throw new BadRequest('empty selection — nothing to edit');
@@ -295,7 +346,8 @@ async function maskedEdit(
   const soft = await softenMask(mask, facts.width, facts.height, sigma);
   const crop = await cropRegion(image, roi);
   const ready = prepare ? await prepare(crop, roi) : crop;
-  const edited = await downloadResult(await runEdit(await upscaleForModel(ready, roi, MODEL_TARGET_SIDE), prompt));
+  const jobDeadline = until ? Math.min(Date.now() + OVERALL_TIMEOUT_MS, until - DOWNLOAD_RESERVE_MS) : undefined;
+  const edited = await downloadResult(await runEdit(await upscaleForModel(ready, roi, MODEL_TARGET_SIDE), prompt, jobDeadline), until);
   return compositeThroughMask(image, edited, soft, facts, roi);
 }
 
@@ -434,17 +486,24 @@ app.post('/api/v1/image-fills', upload.single('image'), async (req, res) => {
     // maski policzyliśmy z oryginału, a wymazywanie obszaru jej nie wymaga).
     const parts = maskComponents(mask, facts.width, facts.height, MAX_FILL_PARTS);
     const masks = parts && parts.length > 1 ? parts.map((p) => cutMask(mask, facts, p)) : [mask];
-    const started = Date.now();
+    const until = Date.now() + REQUEST_BUDGET_MS;
     let current = image;
     let done = 0;
     for (const part of masks) {
       // nie zaczynaj kolejnego przebiegu, jeśli nie zdąży przed 90-sekundowym limitem apki —
       // lepiej oddać częściowo wypełnione zdjęcie niż TIMEOUT i zero efektu
-      if (done && Date.now() - started > FILL_MORE_UNTIL_MS) {
+      if (done && until - Date.now() < MIN_PASS_MS) {
         console.warn(`[image-fills] budżet czasu — wypełniono ${done}/${masks.length} obszarów`);
         break;
       }
-      current = (await maskedEdit(current, facts, part, FILL_PROMPT, sigma, blankPrepare(part, facts, sigma))).buffer;
+      try {
+        current = (await maskedEdit(current, facts, part, FILL_PROMPT, sigma, blankPrepare(part, facts, sigma), until)).buffer;
+      } catch (e) {
+        if (!done) throw e;
+        // kolejny przebieg padł (np. budżet) — oddaj to, co już wypełnione, zamiast wyrzucać opłacone przebiegi
+        console.warn(`[image-fills] przebieg ${done + 1}/${masks.length} nieudany — oddaję częściowy wynik:`, (e as Error).message);
+        break;
+      }
       done++;
     }
     res.json(imageBody({ buffer: current, mime: 'image/jpeg' }));

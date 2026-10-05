@@ -184,6 +184,25 @@ const PhotoTile = memo(function PhotoTile({ source, size, selected, images, onPr
   );
 });
 
+// Komórka siatki folderów/zdjęć (FlatList). Memo + STABILNE handlery (przez ref z bieżącymi akcjami ekranu):
+// wcześniej renderItem tworzył nowe closure'y przy każdym kroku kursora, więc memo kafli nie działało
+// i każdy ruch joysticka przerysowywał WSZYSTKIE zamontowane kafle. Teraz zmieniają się tylko dwa
+// (stary i nowy kursor) — ten sam rodzaj janku, co naprawiony wcześniej w feedzie.
+type GridActions = { tap: (i: number) => void; long: (i: number) => void };
+const GridCell = memo(function GridCell({ item, index, inside, width, pad, size, selected, images, check, tappable, longable, danger, chrome, actions }: { item: unknown; index: number; inside: boolean; width: number; pad: number; size: number; selected: boolean; images?: boolean; check?: boolean; tappable: boolean; longable: boolean; danger: boolean; chrome?: string; actions: { current: GridActions } }) {
+  const onTap = useCallback(() => actions.current.tap(index), [actions, index]);
+  const onLong = useCallback(() => actions.current.long(index), [actions, index]);
+  return (
+    <View style={{ width, padding: pad }}>
+      {inside ? (
+        <PhotoTile source={item as ImageSourcePropType} size={size} selected={selected} images={images} onPress={tappable ? onTap : undefined} onLongPress={longable ? onLong : undefined} check={check} chrome={chrome} />
+      ) : (
+        <FolderTile folder={item as Folder} size={size} selected={selected} images={images} onPress={tappable ? onTap : undefined} onLongPress={longable ? onLong : undefined} check={check} danger={danger} chrome={chrome} />
+      )}
+    </View>
+  );
+});
+
 // MENU (node 360:5309) — kontekstowe menu galerii. Popover fosforowy (#E2FFE4) z ciemnym tekstem; zaznaczona
 // pozycja = ciemna „pigułka" z zielonym tekstem i bulletem „•". Nawigacja joystick góra/dół + press (lub tap).
 const MENU_ITEMS = ['SELECT', 'SORT', 'FILTER MEDIA', 'SHOW HIDDEN ELEMENTS', 'OPEN TRASH BIN', 'SETTINGS'] as const;
@@ -420,7 +439,9 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
             for (const [k, v] of Object.entries(p as Record<string, any>)) {
               out[k] = v && typeof v === 'object' && 'src' in v ? v : { src: v, at: now };
             }
-            setTrashed(out);
+            // SCALENIE, nie podmiana: jeśli użytkownik zdążył coś wyrzucić przed odczytem z dysku,
+            // podmiana zgubiłaby ten wpis i zdjęcie po cichu wróciłoby do galerii
+            setTrashed((cur) => ({ ...out, ...cur }));
           }
         } catch { /* uszkodzone → pusty kosz */ }
       }
@@ -1560,6 +1581,13 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
   // dwa różne znaczenia dzieliłyby jedno wyróżnienie. Kursor chowany tylko podczas swipe-follow /
   // przytrzymania joysticka (selEff=-1 → żaden kafel niepodświetlony).
   const selEff = cursorHidden ? -1 : selected;
+  // bieżące akcje siatki dla [[GridCell]] — ref podmieniany co render, więc kafle dostają stabilny obiekt,
+  // a mimo to zawsze wołają aktualne handlery (selectMode/inside z tego renderu)
+  const gridActions = useRef<GridActions>({ tap: () => {}, long: () => {} });
+  gridActions.current = {
+    tap: (i) => (selectMode ? toggleSelectAt(i) : inside ? (setSelected(i), setViewerOpen(true)) : setOpenFolder(i)),
+    long: (i) => enterSelect(i),
+  };
 
   const content = (
     <>
@@ -1651,7 +1679,9 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
             data={(inside ? photosView : folders) as any[]}
             numColumns={cols}
             extraData={`${selEff}:${diag.images}:${selectMode}:${selectedIds.size}`}
-            keyExtractor={(item: any, index: number) => (inside ? `p${index}` : (item as Folder).id)}
+            // klucz = URI zdjęcia, nie pozycja: po skasowaniu/koszu kafle niżej zachowują tożsamość (bez przeładowania
+            // miniatur); `p${index}` zostaje tylko dla źródeł bez URI (mock/web — tam require'y mogą się powtarzać)
+            keyExtractor={(item: any, index: number) => (inside ? (item?.uri ? String(item.uri) : `p${index}`) : (item as Folder).id)}
             // numColumns → `index` to indeks WIERSZA (nie elementu); offset = rowHeight * wiersz.
             getItemLayout={(_: any, index: number) => ({ length: rowHeight, offset: rowHeight * index, index })}
             onScrollToIndexFailed={() => {}}
@@ -1662,24 +1692,19 @@ export function useGalleryScreen({ mode = 'GALLERY', onCycleMode, onOpenSettings
             onScrollEndDrag={onGridScrollEndDrag}
             onMomentumScrollEnd={onGridMomentumEnd}
             showsVerticalScrollIndicator={false}
+            windowSize={7} // domyślne 21 ekranów montowało setki kafli naraz przy dużych folderach
             renderItem={({ item, index }: { item: any; index: number }) => {
               const isTrashTile = !inside && (item as Folder).id === TRASH_ID;
               const k = inside ? photoKey(item as ImageSourcePropType) : (item as Folder).id;
-              const checked = selectMode && !isTrashTile ? selectedIds.has(k) : undefined;
-              const onTap = selectMode
-                ? (isTrashTile ? undefined : () => toggleSelectAt(index)) // w select mode kosz nieklikalny
-                : inside
-                  ? () => { setSelected(index); setViewerOpen(true); }
-                  : () => setOpenFolder(index);
-              const onLong = isTrashTile || isFolderView ? undefined : () => enterSelect(index);
               return (
-                <View style={{ width: itemWidth, padding: gap / 2 }}>
-                  {inside ? (
-                    <PhotoTile source={item as ImageSourcePropType} size={imgSize} selected={index === selEff} images={diag.images} onPress={onTap} onLongPress={onLong} check={checked} chrome={chromeFg} />
-                  ) : (
-                    <FolderTile folder={item as Folder} size={imgSize} selected={index === selEff} images={diag.images} onPress={onTap} onLongPress={onLong} check={checked} danger={isTrashTile} chrome={chromeFg} />
-                  )}
-                </View>
+                <GridCell
+                  item={item} index={index} inside={inside} width={itemWidth} pad={gap / 2} size={imgSize}
+                  selected={index === selEff} images={diag.images} chrome={chromeFg} danger={isTrashTile}
+                  check={selectMode && !isTrashTile ? selectedIds.has(k) : undefined}
+                  tappable={!(selectMode && isTrashTile)} // w select mode kosz nieklikalny
+                  longable={!isTrashTile && !isFolderView}
+                  actions={gridActions}
+                />
               );
             }}
           />
